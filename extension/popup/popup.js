@@ -6,6 +6,7 @@ const state = {
   result: null,
   activeResult: null,
   groqSettings: {
+    apiKeys: [],
     apiKey: "",
     model: "whisper-large-v3-turbo",
     language: "auto"
@@ -19,10 +20,13 @@ const RESULT_CACHE_VERSION = 2;
 const RESULT_CACHE_CHUNK_SIZE = 240000;
 const JSON_TIME_FIELDS = new Set(["startSeconds", "endSeconds", "durationSeconds"]);
 
-const GROQ_STORAGE_KEYS = ["groqApiKey", "groqModel", "groqLanguage"];
+const GROQ_STORAGE_KEYS = ["groqApiKeys", "groqApiKey", "groqModel", "groqLanguage"];
 const GROQ_DEFAULT_MODEL = "whisper-large-v3-turbo";
 const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions";
-const GROQ_MAX_BYTES = 25 * 1024 * 1024;
+// ~5min audio slices stay safely under Groq's 25MB upload limit without ffmpeg.
+const GROQ_SLICE_SECONDS = 300;
+const GROQ_SLICE_OVERLAP_SECONDS = 5;
+const GROQ_SLICE_MAX_BYTES = 24 * 1024 * 1024;
 
 const PLATFORM_CONFIG = {
   bilibili: {
@@ -323,31 +327,48 @@ async function switchTrackAndExtract() {
 
 async function loadGroqSettings() {
   const stored = await chrome.storage.local.get(GROQ_STORAGE_KEYS);
-  state.groqSettings.apiKey = stored.groqApiKey || "";
+  const apiKeys = normalizeGroqApiKeys(stored.groqApiKeys || stored.groqApiKey);
+  state.groqSettings.apiKeys = apiKeys;
+  state.groqSettings.apiKey = apiKeys[0] || "";
   state.groqSettings.model = stored.groqModel || GROQ_DEFAULT_MODEL;
   state.groqSettings.language = stored.groqLanguage || "auto";
 
-  nodes.groqApiKeyInput.value = state.groqSettings.apiKey;
+  nodes.groqApiKeyInput.value = apiKeys.join("\n");
   nodes.groqModelInput.value = state.groqSettings.model;
   nodes.groqLanguageInput.value = state.groqSettings.language;
 }
 
+function normalizeGroqApiKeys(value) {
+  const list = Array.isArray(value) ? value : String(value || "").split(/[\n,]+/);
+  const seen = new Set();
+  const keys = [];
+  for (const item of list) {
+    const key = String(item || "").trim();
+    if (!key || key.startsWith("#") || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
 async function saveGroqSettings() {
-  const apiKey = nodes.groqApiKeyInput.value.trim();
+  const apiKeys = normalizeGroqApiKeys(nodes.groqApiKeyInput.value);
   const model = nodes.groqModelInput.value.trim() || GROQ_DEFAULT_MODEL;
   const language = nodes.groqLanguageInput.value.trim() || "auto";
 
   await chrome.storage.local.set({
-    groqApiKey: apiKey,
+    groqApiKeys: apiKeys,
+    groqApiKey: apiKeys[0] || "",
     groqModel: model,
     groqLanguage: language
   });
 
-  state.groqSettings.apiKey = apiKey;
+  state.groqSettings.apiKeys = apiKeys;
+  state.groqSettings.apiKey = apiKeys[0] || "";
   state.groqSettings.model = model;
   state.groqSettings.language = language;
   showButtonFeedback(nodes.saveGroqSettingsButton, "已保存", "保存设置");
-  setMessage("Groq 设置已保存。");
+  setMessage(apiKeys.length > 1 ? `Groq 设置已保存（${apiKeys.length} 个 Key 轮换）。` : "Groq 设置已保存。");
 }
 
 function toggleGroqSettings() {
@@ -364,10 +385,10 @@ async function transcribeWithGroq(progressNode) {
     return;
   }
 
-  if (!state.groqSettings.apiKey) {
+  if (!state.groqSettings.apiKeys.length && !state.groqSettings.apiKey) {
     nodes.groqSettings.hidden = false;
     setButtonLabel(nodes.toggleGroqSettingsButton, "收起");
-    setMessage("请先填写并保存 Groq API Key。", true);
+    setMessage("请先填写并保存 Groq API Key（支持一行一个多 Key 轮换）。", true);
     return;
   }
 
@@ -382,10 +403,10 @@ async function transcribeWithGroq(progressNode) {
     setGroqProgress(progressNode, "正在下载音频…");
     setMessage("正在下载音频…");
     const audioBlob = await fetchAudioBlob(audioSource.url, platform);
-    setGroqProgress(progressNode, "正在调用 Groq Whisper…");
-    setMessage("正在调用 Groq Whisper…");
-    const groqJson = await requestGroqTranscription(audioBlob, audioSource.mimeType);
-    const result = normalizeGroqResult(groqJson, {
+    setGroqProgress(progressNode, "正在切片并调用 Groq Whisper…");
+    setMessage("正在切片并调用 Groq Whisper…");
+    const sliceResults = await transcribeAudioSlices(audioBlob, { progressNode, platform });
+    const result = normalizeGroqSlices(sliceResults, {
       platform,
       videoId: parsePlatformVideoId(state.tab?.url, platform) || state.metadata?.videoId || audioSource.videoId,
       url: state.tab?.url || state.metadata?.url,
@@ -438,15 +459,236 @@ async function fetchAudioBlob(audioUrl, platform) {
   }
   const blob = await response.blob();
   if (!blob.size) throw new Error("音频下载为空。");
-  if (blob.size > GROQ_MAX_BYTES) {
-    throw new Error("音频文件过大，当前版本暂不支持自动分片。");
-  }
   return blob;
 }
 
-async function requestGroqTranscription(audioBlob, mimeType) {
+function getGroqApiKeys() {
+  const keys = normalizeGroqApiKeys(state.groqSettings.apiKeys);
+  if (state.groqSettings.apiKey && !keys.includes(state.groqSettings.apiKey)) {
+    keys.unshift(state.groqSettings.apiKey);
+  }
+  return keys;
+}
+
+function parseRateLimitWaitSeconds(message) {
+  const text = String(message || "");
+  const minuteMatch = text.match(/try again in ([0-9]+)m([0-9]+(?:\.[0-9]+)?)s/i);
+  if (minuteMatch) return Number(minuteMatch[1]) * 60 + Number(minuteMatch[2]) + 1;
+  const secondMatch = text.match(/try again in ([0-9]+(?:\.[0-9]+)?)s/i);
+  if (secondMatch) return Number(secondMatch[1]) + 1;
+  return 0;
+}
+
+async function sliceAudioBlob(audioBlob) {
+  const durationSeconds = await probeAudioDuration(audioBlob);
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return { slices: [{ blob: audioBlob, start: 0, end: null, index: 1 }], durationSeconds: null };
+  }
+  if (durationSeconds <= GROQ_SLICE_SECONDS && audioBlob.size <= GROQ_SLICE_MAX_BYTES) {
+    return { slices: [{ blob: audioBlob, start: 0, end: durationSeconds, index: 1 }], durationSeconds };
+  }
+  // No ffmpeg in the extension: decode once via WebAudio, then re-encode each
+  // window as 16kHz mono WAV. This mirrors Panopto's chunk/overlap/manifest
+  // idea (split_for_groq.py) using only browser capabilities.
+  const channelData = await decodeAudioToMono16k(audioBlob);
+  const sampleRate = 16000;
+  const stride = GROQ_SLICE_SECONDS - GROQ_SLICE_OVERLAP_SECONDS;
+  const slices = [];
+  let start = 0;
+  let index = 1;
+  while (start < durationSeconds) {
+    const end = Math.min(start + GROQ_SLICE_SECONDS, durationSeconds);
+    const startSample = Math.floor(start * sampleRate);
+    const endSample = Math.min(channelData.length, Math.ceil(end * sampleRate));
+    const window = channelData.slice(startSample, endSample);
+    slices.push({
+      blob: encodeWavBlob(window, sampleRate),
+      start,
+      end,
+      index
+    });
+    if (end >= durationSeconds) break;
+    start += stride;
+    index += 1;
+  }
+  return { slices, durationSeconds };
+}
+
+async function decodeAudioToMono16k(audioBlob) {
+  const OfflineAudioContextCtor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!OfflineAudioContextCtor && !AudioContextCtor) {
+    throw new Error("当前浏览器不支持音频解码切片，长音频请用 D:/PanoptoTranscribe/transcribe.py 处理。");
+  }
+  const sourceBuffer = await audioBlob.arrayBuffer();
+  let decoded;
+  try {
+    if (OfflineAudioContextCtor) {
+      const ctx = new OfflineAudioContextCtor(1, 16000, 16000);
+      decoded = await ctx.decodeAudioData(sourceBuffer.slice(0));
+    } else {
+      const ctx = new AudioContextCtor();
+      try {
+        decoded = await ctx.decodeAudioData(sourceBuffer.slice(0));
+      } finally {
+        try {
+          await ctx.close();
+        } catch (_error) {
+          // Ignore close races.
+        }
+      }
+    }
+  } catch (_error) {
+    throw new Error("音频解码失败，长音频请用 D:/PanoptoTranscribe/transcribe.py 处理。");
+  }
+  const channelCount = decoded.numberOfChannels || 1;
+  const length = decoded.length || 0;
+  if (!length) throw new Error("音频解码为空。");
+  const mono = new Float32Array(length);
+  for (let channel = 0; channel < channelCount; channel += 1) {
+    const data = decoded.getChannelData(channel);
+    for (let i = 0; i < length; i += 1) {
+      mono[i] += data[i] / channelCount;
+    }
+  }
+  const sourceRate = decoded.sampleRate || 16000;
+  if (sourceRate === 16000) return mono;
+  const targetLength = Math.floor((length * 16000) / sourceRate);
+  const resampled = new Float32Array(targetLength);
+  for (let i = 0; i < targetLength; i += 1) {
+    const pos = (i * sourceRate) / 16000;
+    const left = Math.floor(pos);
+    const frac = pos - left;
+    const a = mono[left] || 0;
+    const b = mono[left + 1] || a;
+    resampled[i] = a + (b - a) * frac;
+  }
+  return resampled;
+}
+
+function encodeWavBlob(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  writeAscii(view, 0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeAscii(view, 8, "WAVE");
+  writeAscii(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i += 1) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, clamped < 0 ? clamped * 32768 : clamped * 32767, true);
+  }
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+function writeAscii(view, offset, text) {
+  for (let i = 0; i < text.length; i += 1) {
+    view.setUint8(offset + i, text.charCodeAt(i));
+  }
+}
+
+function probeAudioDuration(audioBlob) {
+  return new Promise((resolve) => {
+    try {
+      const url = URL.createObjectURL(audioBlob);
+      const audio = new Audio();
+      audio.preload = "metadata";
+      const done = (value) => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_error) {
+          // Ignore cleanup races.
+        }
+        resolve(value);
+      };
+      audio.onloadedmetadata = () => done(Number(audio.duration));
+      audio.onerror = () => done(Number.NaN);
+      audio.src = url;
+      window.setTimeout(() => done(Number.NaN), 8000);
+    } catch (_error) {
+      resolve(Number.NaN);
+    }
+  });
+}
+
+async function transcribeAudioSlices(audioBlob, { progressNode, platform }) {
+  const apiKeys = getGroqApiKeys();
+  if (!apiKeys.length) throw new Error("请先填写并保存 Groq API Key。");
+  const cooldowns = apiKeys.map(() => 0);
+  const { slices, durationSeconds } = await sliceAudioBlob(audioBlob);
+  const total = slices.length;
+  const sliceResults = [];
+
+  // Small files / unknown duration: single Groq call, keys rotate on 429.
+  if (total <= 1 || !Number.isFinite(durationSeconds)) {
+    const only = slices[0];
+    const raw = await transcribeOneSliceWithRotation(only.blob, apiKeys, cooldowns, 1, 1, progressNode);
+    sliceResults.push({ ...only, raw });
+    return sliceResults;
+  }
+
+  // Long audio: each slice window is a real WAV re-encode, uploaded separately.
+  // Time offsets + overlap-drop mirror D:/PanoptoTranscribe/transcribe_groq_chunks.py.
+  for (let i = 0; i < slices.length; i += 1) {
+    const slice = slices[i];
+    if (slice.blob.size > GROQ_SLICE_MAX_BYTES) {
+      throw new Error(`第 ${slice.index} 个音频分片过大（${(slice.blob.size / 1048576).toFixed(1)}MB），请用 D:/PanoptoTranscribe/transcribe.py 处理。`);
+    }
+    setGroqProgress(progressNode, `正在转录 ${i + 1}/${total}…`);
+    setMessage(`正在转录 ${i + 1}/${total}…`);
+    const raw = await transcribeOneSliceWithRotation(slice.blob, apiKeys, cooldowns, i + 1, total, progressNode);
+    sliceResults.push({ ...slice, raw });
+  }
+  return sliceResults;
+}
+
+async function transcribeOneSliceWithRotation(sliceBlob, apiKeys, cooldowns, sliceIndex, sliceTotal, progressNode) {
+  if (sliceBlob.size > GROQ_SLICE_MAX_BYTES) {
+    throw new Error("音频分片过大，请用 D:/PanoptoTranscribe/transcribe.py 处理。");
+  }
+  while (true) {
+    const now = Date.now();
+    const available = cooldowns
+      .map((until, index) => ({ until, index }))
+      .filter((entry) => entry.until <= now)
+      .map((entry) => entry.index);
+    if (!available.length) {
+      const waitMs = Math.max(1000, Math.min(...cooldowns) - now);
+      setGroqProgress(progressNode, `Key 限流，等待 ${(waitMs / 1000).toFixed(1)}s 后继续（${sliceIndex}/${sliceTotal}）…`);
+      await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+      continue;
+    }
+    for (const keyIndex of available) {
+      try {
+        return await requestGroqTranscription(sliceBlob, apiKeys[keyIndex]);
+      } catch (error) {
+        const status = error?.groqStatus;
+        const waitSeconds = parseRateLimitWaitSeconds(error?.message);
+        if (status === 429 || /rate limit|too many requests|please try again/i.test(error?.message || "")) {
+          cooldowns[keyIndex] = Date.now() + (waitSeconds > 0 ? waitSeconds * 1000 : 60000);
+          setGroqProgress(progressNode, `Key ${keyIndex + 1} 限流，已切换 Key（${sliceIndex}/${sliceTotal}）…`);
+          setMessage(`Key ${keyIndex + 1} 限流，已切换 Key（${sliceIndex}/${sliceTotal}）…`);
+          break;
+        }
+        throw error;
+      }
+    }
+  }
+}
+
+async function requestGroqTranscription(audioBlob, apiKey) {
+  const key = apiKey || state.groqSettings.apiKey || getGroqApiKeys()[0];
+  if (!key) throw new Error("请先填写并保存 Groq API Key。");
   const formData = new FormData();
-  formData.append("file", audioBlob, guessAudioFilename(mimeType));
+  formData.append("file", audioBlob, guessAudioFilename(audioBlob.type));
   formData.append("model", state.groqSettings.model || GROQ_DEFAULT_MODEL);
   formData.append("response_format", "verbose_json");
   const language = normalizeLanguage(state.groqSettings.language);
@@ -457,14 +699,16 @@ async function requestGroqTranscription(audioBlob, mimeType) {
   const response = await fetch(GROQ_ENDPOINT, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${state.groqSettings.apiKey}`
+      Authorization: `Bearer ${key}`
     },
     body: formData
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     const message = data?.error?.message || data?.message || `Groq API HTTP ${response.status}`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.groqStatus = response.status;
+    throw error;
   }
   return data;
 }
@@ -477,23 +721,40 @@ function guessAudioFilename(mimeType) {
   return "audio.m4a";
 }
 
-function normalizeGroqResult(groqJson, context) {
-  const rawSegments = Array.isArray(groqJson?.segments) ? groqJson.segments : [];
-  const segments = rawSegments
-    .map((segment) => {
-      const startSeconds = Number(segment.start);
-      const endSeconds = Number(segment.end);
-      return {
-        startSeconds,
-        durationSeconds: Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds
-          ? endSeconds - startSeconds
+function normalizeGroqSlices(sliceResults, context) {
+  const segments = [];
+  for (const slice of sliceResults) {
+    const rawSegments = Array.isArray(slice.raw?.segments) ? slice.raw.segments : [];
+    for (const segment of rawSegments) {
+      const localStart = Number(segment.start);
+      const localEnd = Number(segment.end);
+      const text = String(segment.text || "").trim();
+      if (!Number.isFinite(localStart) || !text) continue;
+      // Mirror Panopto overlap stitching: drop head-overlap duplicates.
+      if (slice.index > 1 && Number.isFinite(localEnd) && localEnd <= GROQ_SLICE_OVERLAP_SECONDS) continue;
+      const sliceStart = Number.isFinite(slice.start) ? slice.start : 0;
+      const absoluteStart = localStart + sliceStart;
+      const absoluteEnd = Number.isFinite(localEnd) ? localEnd + sliceStart : undefined;
+      segments.push({
+        startSeconds: absoluteStart,
+        durationSeconds: Number.isFinite(absoluteStart) && Number.isFinite(absoluteEnd) && absoluteEnd > absoluteStart
+          ? absoluteEnd - absoluteStart
           : undefined,
-        text: String(segment.text || "").trim()
-      };
-    })
-    .filter((segment) => Number.isFinite(segment.startSeconds) && segment.text.length > 0);
+        text,
+        sliceIndex: slice.index
+      });
+    }
+  }
 
-  if (!segments.length) {
+  segments.sort((a, b) => a.startSeconds - b.startSeconds);
+  const deduped = [];
+  for (const segment of segments) {
+    const prev = deduped[deduped.length - 1];
+    if (prev && prev.text === segment.text && Math.abs(prev.startSeconds - segment.startSeconds) < 1) continue;
+    deduped.push(segment);
+  }
+
+  if (!deduped.length) {
     throw new Error("Groq 返回了空转录结果。");
   }
 
@@ -511,10 +772,14 @@ function normalizeGroqResult(groqJson, context) {
       source: "asr"
     },
     availableTracks: [],
-    segments,
-    text: segments.map((segment) => segment.text).join("\n"),
-    warnings: []
+    segments: deduped.map(({ startSeconds, durationSeconds, text }) => ({ startSeconds, durationSeconds, text })),
+    text: deduped.map((segment) => segment.text).join("\n"),
+    warnings: sliceResults.length > 1 ? ["长音频已按 300s/5s 重叠切片转录后拼接。"] : []
   };
+}
+
+function normalizeGroqResult(groqJson, context) {
+  return normalizeGroqSlices([{ raw: groqJson, index: 1, start: 0 }], context);
 }
 
 async function refreshActiveTab() {

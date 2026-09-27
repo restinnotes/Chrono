@@ -191,10 +191,11 @@ textarea:focus {
 }
 
 textarea {
-  min-height: 96px;
+  min-height: 64px;
   padding: 7px 9px;
   resize: vertical;
   line-height: 1.45;
+  font: 11px/1.48 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 button {

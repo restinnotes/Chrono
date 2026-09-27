@@ -23,7 +23,7 @@ Chrono 自动提取当前 Bilibili / YouTube 字幕。打开插件后自动选�
 - Automatically extracts subtitles and shows the full transcript.
 - One-click **复制全文** copies plain transcript text (`result.text`).
 - Exports transcripts as TXT, SRT, MD, or JSON.
-- Optional Groq Whisper fallback for videos without subtitle tracks (BYOK).
+- Optional Groq Whisper fallback for videos without subtitle tracks (BYOK, multi-key rotation + auto slicing).
 - Restores the last extracted result when reopening the popup on the same video page.
 
 ## Install Locally
@@ -56,11 +56,14 @@ Advanced users can switch subtitle language under **更多 / 高级** without ch
 
 ## Groq BYOK Notes
 
+- Keys: paste one per line in Groq settings; stored as `groqApiKeys` in `chrome.storage.local`, deduped, never in git.
+- Rotation: per-slice round-robin with 429 cooldown, parsing `Please try again in ...` wait times (same idea as `transcribe_groq_chunks.py`).
+- Slicing: 300s windows with 5s overlap, re-encoded as 16kHz mono WAV in-browser (no ffmpeg), stitched with head-overlap drop + time offsets + dedupe.
 - Default model: `whisper-large-v3-turbo`, language: `auto` (no `language` field is sent in auto mode).
 - Groq endpoint: `https://api.groq.com/openai/v1/audio/transcriptions` with `response_format=verbose_json`.
 - Audio URLs are resolved in the page context; the Groq request itself runs in the extension popup context.
 - YouTube audio prefers low-bitrate audio-only InnerTube streams; Bilibili audio prefers the lowest-bitrate DASH audio stream.
-- Large audio files are rejected with a clear error: current version does not auto-split.
+- Oversize slices (>24MB WAV) abort with a clear error pointing at `D:/PanoptoTranscribe/transcribe.py`.
 
 ## Privacy
 
@@ -92,6 +95,8 @@ extension/
     popup.css
     popup.js
 ```
+
+> `groq_api_keys.txt` style secrets must never be committed; keys live in `chrome.storage.local`.
 
 ## Extension Flow
 
