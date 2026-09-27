@@ -456,6 +456,60 @@
     return Math.round((Number(value) + Number.EPSILON) * 1000) / 1000;
   }
 
+  function pickLowestBitrateBilibiliAudio(audioList) {
+    const items = (audioList || [])
+      .map((item) => ({
+        url: item.baseUrl || item.base_url || "",
+        mimeType: item.mimeType || item.mime_type || "audio/mp4",
+        contentLength: item.contentLength ? Number(item.contentLength) : undefined,
+        bitrate: Number(item.bandwidth) || 0,
+        codecs: item.codecs || ""
+      }))
+      .filter((item) => item.url);
+    if (!items.length) return null;
+    items.sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
+    const lowest = items[0];
+    return {
+      url: lowest.url,
+      mimeType: lowest.mimeType,
+      contentLength: lowest.contentLength,
+      bitrate: lowest.bitrate
+    };
+  }
+
+  async function loadBilibiliDashAudio(metadata) {
+    // fnval=16 requests DASH only; fnver=0 + fourk=1 matches the documented web flow.
+    const params = new URLSearchParams({
+      bvid: metadata.videoId,
+      cid: String(metadata.cid),
+      qn: "16",
+      fnver: "0",
+      fnval: "16",
+      fourk: "1"
+    });
+    const playurl = await fetchJson(`https://api.bilibili.com/x/player/playurl?${params.toString()}`);
+    if (playurl.code !== 0 || !playurl.data) {
+      throw new Error(`Failed to load Bilibili audio stream: ${playurl.message || "unknown error"}`);
+    }
+    const audioList = playurl.data?.dash?.audio || [];
+    const picked = pickLowestBitrateBilibiliAudio(audioList);
+    if (!picked) throw new Error("Bilibili did not return a usable DASH audio stream.");
+    return picked;
+  }
+
+  async function getAudioSource() {
+    const metadata = await loadVideoMetadata();
+    const audio = await loadBilibiliDashAudio(metadata);
+    return {
+      platform: "bilibili",
+      videoId: metadata.videoId,
+      url: audio.url,
+      mimeType: audio.mimeType,
+      contentLength: audio.contentLength,
+      bitrate: audio.bitrate
+    };
+  }
+
   async function loadCollectionItemMetadata(item) {
     if (item.aid && item.cid) {
       return {
@@ -512,6 +566,11 @@
 
       if (message.action === "extractCollectionSubtitles") {
         postResult(message.requestId, true, await extractCollectionSubtitles(message.payload));
+        return;
+      }
+
+      if (message.action === "getAudioSource") {
+        postResult(message.requestId, true, await getAudioSource());
         return;
       }
 

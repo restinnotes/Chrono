@@ -1,5 +1,5 @@
 (() => {
-const CONTENT_SCRIPT_VERSION = "2026-07-05-collection-port";
+const CONTENT_SCRIPT_VERSION = "2026-09-27-groq-audio-source";
 if (window.__BCE_CONTENT_SCRIPT_VERSION__ === CONTENT_SCRIPT_VERSION) {
   return;
 }
@@ -30,6 +30,9 @@ const MESSAGE_ROUTES = {
   BCE_EXTRACT_BILIBILI_COLLECTION_SUBTITLES: { platform: "bilibili", action: "extractCollectionSubtitles" },
   BCE_GET_YOUTUBE_TRACKS: { platform: "youtube", action: "getTracks" },
   BCE_EXTRACT_YOUTUBE_SUBTITLE: { platform: "youtube", action: "extractSubtitle" },
+  BCE_GET_BILIBILI_AUDIO_SOURCE: { platform: "bilibili", action: "getAudioSource" },
+  BCE_GET_YOUTUBE_AUDIO_SOURCE: { platform: "youtube", action: "getAudioSource" },
+  BCE_GET_AUDIO_SOURCE: { platform: null, action: "getAudioSource" },
   BCE_GET_TRACKS: { platform: null, action: "getTracks" },
   BCE_EXTRACT_SUBTITLE: { platform: null, action: "extractSubtitle" }
 };
@@ -96,7 +99,7 @@ async function sendToPage(action, payload = {}) {
   );
 
   return new Promise((resolve, reject) => {
-    const timeoutMs = action === "extractCollectionSubtitles" ? 180000 : 30000;
+    const timeoutMs = action === "extractCollectionSubtitles" ? 180000 : action === "getAudioSource" ? 45000 : 30000;
     const timeoutId = window.setTimeout(() => {
       pendingRequests.delete(requestId);
       reject(new Error("Timed out while waiting for the page extractor."));

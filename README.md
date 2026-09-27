@@ -13,28 +13,22 @@
 
 # Chrono
 
-Chrono is a Chrome / Chromium extension for extracting subtitles from the current Bilibili or YouTube video page and optionally generating an AI summary from the transcript.
+Chrono 自动提取当前 Bilibili / YouTube 字幕。打开插件后自动选择最合适字幕，无需手动获取轨道或选择语言。无字幕的视频可以选择使用自己的 Groq API Key 调用 Whisper 转录。
 
 ## Features
 
 - Detects the current Bilibili or YouTube video page.
-- Lists available subtitle tracks.
-- Extracts the selected subtitle track.
-- Extracts subtitles from detected Bilibili collections or multi-part videos.
-- Previews subtitle segments in the popup.
-- Exports transcripts as Markdown, SRT, TXT, or JSON.
-- Copies Markdown transcript to the clipboard.
+- Automatically loads subtitle tracks when the popup opens.
+- Automatically picks the best subtitle track (saved preference, browser language, manual before auto).
+- Automatically extracts subtitles and shows the full transcript.
+- One-click **复制全文** copies plain transcript text (`result.text`).
+- Exports transcripts as TXT, SRT, MD, or JSON.
+- Optional Groq Whisper fallback for videos without subtitle tracks (BYOK).
 - Restores the last extracted result when reopening the popup on the same video page.
-- Generates optional AI summaries through OpenAI-compatible Chat Completions APIs.
-- Supports provider presets for OpenAI, DeepSeek, Qwen / Alibaba Cloud Model Studio, MiniMax, and custom compatible endpoints.
 
 ## Install Locally
 
-Download the packaged extension from:
-
-- GitHub Releases: `chrono-extension-v0.3.2.zip`
-
-Then:
+Download the packaged extension from GitHub Releases, then:
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
@@ -46,48 +40,36 @@ Then:
 
 ## Usage
 
-1. Click **获取字幕轨道** to load available subtitle tracks.
-2. Select a subtitle language.
-3. Click **提取字幕**.
-   - On Bilibili collection or multi-part pages, choose a range, then click **提取合集** to batch extract subtitles with the selected language.
-   - After batch extraction, choose **合集总览** or a single video in the result list before exporting or generating an AI summary.
-4. Use the export actions:
-   - **复制 MD**
-   - **下载 MD**
-   - **SRT**
-   - **TXT**
-   - **JSON**
-5. To use AI summary:
-   - Open **AI 总结** settings.
-   - Choose a provider.
-   - Enter the provider API key.
-   - Confirm the model and Base URL.
-   - Optionally customize the summary prompt, or restore the default prompt.
-   - Save settings.
-   - Click **AI 总结字幕** after extracting subtitles.
+With subtitles:
 
-## AI Provider Notes
+1. Open a YouTube / Bilibili video page.
+2. Click Chrono — subtitles are detected and extracted automatically.
+3. Click **复制全文**. Optional: use TXT / SRT / MD / JSON exports.
 
-Chrono calls OpenAI-compatible `/chat/completions` endpoints from the popup.
+Without subtitles:
 
-Built-in defaults:
+1. Open the video page and click Chrono.
+2. Click **使用 Groq 转录** (requires a Groq API Key in Groq settings).
+3. After transcription finishes, click **复制全文**.
 
-| Provider | Default Base URL | Default Model |
-| --- | --- | --- |
-| OpenAI | `https://api.openai.com/v1` | `gpt-5.5` |
-| DeepSeek | `https://api.deepseek.com` | `deepseek-v4-flash` |
-| Qwen / Alibaba Cloud Model Studio | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
-| MiniMax | `https://api.minimax.io/v1` | `MiniMax-M1` |
+Advanced users can switch subtitle language under **更多 / 高级** without changing the default zero-click flow.
 
-API keys, model settings, and the custom summary prompt are stored locally in `chrome.storage.local`. Subtitle text is sent to the selected AI provider only when you click **AI 总结字幕**.
+## Groq BYOK Notes
+
+- Default model: `whisper-large-v3-turbo`, language: `auto` (no `language` field is sent in auto mode).
+- Groq endpoint: `https://api.groq.com/openai/v1/audio/transcriptions` with `response_format=verbose_json`.
+- Audio URLs are resolved in the page context; the Groq request itself runs in the extension popup context.
+- YouTube audio prefers low-bitrate audio-only InnerTube streams; Bilibili audio prefers the lowest-bitrate DASH audio stream.
+- Large audio files are rejected with a clear error: current version does not auto-split.
 
 ## Privacy
 
 - Chrono does not ask you to paste browser cookies.
 - Bilibili and YouTube metadata and subtitle-track discovery run in the video page context so the browser can use the active session naturally.
 - Subtitle-track discovery and subtitle fetching are handled by platform page scripts, while `content/content.js` only routes popup requests.
-- Extracted results are cached locally in `chrome.storage.local`; `unlimitedStorage` is used so large Bilibili collection transcripts can be restored after reopening the popup.
-- AI requests are optional and only run after the user clicks the summary button.
+- Extracted results are cached locally in `chrome.storage.local`; `unlimitedStorage` is used so large transcripts can be restored after reopening the popup.
+- Groq API Key 仅保存在 `chrome.storage.local`。
+- 只有用户主动点击“使用 Groq 转录”时才发送视频音频给 Groq。
 
 ## Project Structure
 
@@ -117,18 +99,19 @@ The popup sends platform-specific messages:
 
 - `BCE_GET_BILIBILI_TRACKS`
 - `BCE_EXTRACT_BILIBILI_SUBTITLE`
-- `BCE_EXTRACT_BILIBILI_COLLECTION_SUBTITLES`
+- `BCE_GET_BILIBILI_AUDIO_SOURCE`
 - `BCE_GET_YOUTUBE_TRACKS`
 - `BCE_EXTRACT_YOUTUBE_SUBTITLE`
+- `BCE_GET_YOUTUBE_AUDIO_SOURCE`
 
-`content/content.js` only routes messages. It detects the active platform, injects the matching page script, normalizes payload platform fields, and forwards the action as `getTracks`, `extractSubtitle`, or `extractCollectionSubtitles`.
+`content/content.js` only routes messages. It detects the active platform, injects the matching page script, normalizes payload platform fields, and forwards the action as `getTracks`, `extractSubtitle`, or `getAudioSource`.
 
 Platform-specific popup behavior, including message names, URL detection, video-id parsing, title cleanup, and author labels, is declared in `PLATFORM_CONFIG` instead of inline branching.
 
 Each file in `injected/` owns the platform-specific implementation and returns the same result shape for single-video extraction: `platform`, `videoId`, `url`, `title`, `author`, `selectedTrack`, `availableTracks`, `segments`, `text`, and `warnings`.
 
-Bilibili collection and multi-part extraction also returns `kind: "collection"`, `collection`, and `items`, so the popup can switch between **合集总览** and a single extracted video before export or AI summary.
+Groq transcription results are normalized to the same result shape with `selectedTrack.id = "groq-whisper"` and `source = "asr"`, so rendering, clipboard, exports, and cache are fully reused.
 
 ## Current Scope
 
-Chrono currently supports the active Bilibili or YouTube video page, plus batch extraction for detected Bilibili collections and multi-part videos. Obsidian integration is not included yet.
+Chrono currently supports the active Bilibili or YouTube video page. Obsidian integration is not included.

@@ -25,51 +25,8 @@
         <p id="videoAuthor" class="muted"></p>
       </section>
 
-      <section class="card controls">
-        <button id="loadTracksButton" class="primary" type="button">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8A2.5 2.5 0 0 1 17.5 16H9l-4 4v-4.5A2.5 2.5 0 0 1 4 13.5v-8Z"/><path d="M8 8h8M8 11.5h5"/></svg>
-          <span class="button-label">获取字幕轨道</span>
-        </button>
-
-        <label class="field" for="trackSelect">
-          <span>字幕语言</span>
-          <select id="trackSelect" disabled>
-            <option value="">尚未加载</option>
-          </select>
-        </label>
-
-        <div id="extractModeTabs" class="mode-tabs" hidden>
-          <button id="singleModeButton" class="mode-tab active" type="button">
-            <span class="button-label">单条</span>
-          </button>
-          <button id="collectionModeButton" class="mode-tab" type="button" disabled>
-            <span class="button-label">合集</span>
-          </button>
-        </div>
-
-        <div id="singleExtractPanel" class="extract-panel">
-          <button id="extractButton" class="secondary" type="button" disabled>
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11"/><path d="m7 9 5 5 5-5"/><path d="M5 19h14"/></svg>
-            <span class="button-label">提取字幕</span>
-          </button>
-        </div>
-
-        <div id="collectionExtractPanel" class="extract-panel" hidden>
-          <label id="collectionRangeField" class="field" for="collectionRangeSelect">
-            <span>合集范围</span>
-            <select id="collectionRangeSelect">
-              <option value="20">前 20 个</option>
-              <option value="50">前 50 个</option>
-              <option value="100">前 100 个</option>
-              <option value="all">全部</option>
-            </select>
-          </label>
-
-          <button id="extractCollectionButton" class="secondary" type="button" disabled>
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h6l2 2h8v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M8 12h8M8 15h5"/></svg>
-            <span class="button-label">提取合集</span>
-          </button>
-        </div>
+      <section id="statusCard" class="card status-card" hidden>
+        <p id="autoStatusText" class="muted">正在准备字幕…</p>
       </section>
 
       <section id="resultPanel" class="card result" hidden>
@@ -94,101 +51,99 @@
           <div id="collectionList" class="collection-list"></div>
         </div>
 
+        <button id="copyTextButton" class="primary" type="button">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h10v12H8z"/><path d="M6 16H4V4h12v2"/></svg>
+          <span class="button-label">复制全文</span>
+        </button>
+
         <div class="actions export-actions">
-          <button id="copyMarkdownButton" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h10v12H8z"/><path d="M6 16H4V4h12v2"/></svg>
-            <span class="button-label">复制 MD</span>
-          </button>
-          <button id="downloadMarkdownButton" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10"/><path d="m8 10 4 4 4-4"/><path d="M5 20h14"/></svg>
-            <span class="button-label">下载 MD</span>
-          </button>
-          <button id="downloadJsonButton" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H6a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2h-2"/></svg>
-            <span class="button-label">JSON</span>
+          <button id="downloadTxtButton" type="button">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>
+            <span class="button-label">TXT</span>
           </button>
           <button id="downloadSrtButton" type="button">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v16H7z"/><path d="M10 8h4M10 12h4M10 16h2"/></svg>
             <span class="button-label">SRT</span>
           </button>
-          <button id="downloadTxtButton" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>
-            <span class="button-label">TXT</span>
+          <button id="downloadMarkdownButton" type="button">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10"/><path d="m8 10 4 4 4-4"/><path d="M5 20h14"/></svg>
+            <span class="button-label">MD</span>
+          </button>
+          <button id="downloadJsonButton" type="button">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H6a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2h-2"/></svg>
+            <span class="button-label">JSON</span>
           </button>
         </div>
+
+        <details id="advancedTracks" class="advanced">
+          <summary>更多 / 高级</summary>
+          <label class="field" for="trackSelect">
+            <span>切换字幕语言</span>
+            <select id="trackSelect" disabled>
+              <option value="">尚未加载</option>
+            </select>
+          </label>
+          <button id="switchTrackButton" class="secondary" type="button" disabled>
+            <span class="button-label">切换并重新提取</span>
+          </button>
+        </details>
       </section>
 
-      <section class="card ai">
+      <section id="noSubtitlePanel" class="card no-subtitle" hidden>
+        <h2>当前视频没有可用字幕</h2>
+        <p class="muted">可以使用自己的 Groq API Key 调用 Whisper 转录音频。</p>
+        <button id="transcribeButton" class="primary" type="button">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10"/><path d="M7 7a5 5 0 0 0 10 0"/><path d="M5 19h14"/></svg>
+          <span class="button-label">使用 Groq 转录</span>
+        </button>
+        <p id="groqProgress" class="muted" hidden></p>
+      </section>
+
+      <section id="extractFailedPanel" class="card no-subtitle" hidden>
+        <h2>字幕提取失败</h2>
+        <p id="extractFailedText" class="muted">平台字幕暂时无法读取。</p>
+        <div class="actions">
+          <button id="retryExtractButton" class="secondary" type="button">
+            <span class="button-label">重试</span>
+          </button>
+          <button id="fallbackGroqButton" class="primary" type="button">
+            <span class="button-label">使用 Groq 转录</span>
+          </button>
+        </div>
+        <p id="groqFallbackProgress" class="muted" hidden></p>
+      </section>
+
+      <section class="card groq">
         <div class="section-title">
           <div>
-            <h2>AI 总结</h2>
-            <p class="muted">支持 OpenAI、DeepSeek、Qwen、MiniMax 等兼容接口。</p>
+            <h2>Groq 转录设置</h2>
+            <p class="muted">仅在无字幕视频上按需使用，Key 只保存在本地。</p>
           </div>
-          <button id="toggleAiSettingsButton" class="ghost" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="M19 12a7.2 7.2 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.3 3.1a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.5a7.2 7.2 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.3 3.1h5l.3-3.1a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1Z"/></svg>
+          <button id="toggleGroqSettingsButton" class="ghost" type="button">
             <span class="button-label">设置</span>
           </button>
         </div>
 
-        <div id="aiSettings" class="ai-settings" hidden>
-          <label class="field" for="providerSelect">
-            <span>供应商</span>
-            <select id="providerSelect">
-              <option value="openai">OpenAI</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="qwen">Qwen / 阿里云百炼</option>
-              <option value="minimax">MiniMax</option>
-              <option value="custom">自定义兼容接口</option>
-            </select>
+        <div id="groqSettings" class="groq-settings" hidden>
+          <label class="field" for="groqApiKeyInput">
+            <span>Groq API Key</span>
+            <input id="groqApiKeyInput" type="password" autocomplete="off" placeholder="gsk-...">
           </label>
-
-          <label class="field" for="apiKeyInput">
-            <span id="apiKeyLabel">API Key</span>
-            <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-...">
-          </label>
-
           <div class="split">
-            <label class="field" for="modelInput">
-              <span>模型</span>
-              <input id="modelInput" type="text" autocomplete="off" value="gpt-5.5">
+            <label class="field" for="groqModelInput">
+              <span>Model</span>
+              <input id="groqModelInput" type="text" autocomplete="off" value="whisper-large-v3-turbo">
             </label>
-            <label class="field" for="baseUrlInput">
-              <span>Base URL</span>
-              <input id="baseUrlInput" type="url" autocomplete="off" value="https://api.openai.com/v1">
+            <label class="field" for="groqLanguageInput">
+              <span>Language（auto 为自动识别）</span>
+              <input id="groqLanguageInput" type="text" autocomplete="off" value="auto">
             </label>
           </div>
-
-          <label class="field prompt-field" for="promptInput">
-            <span>总结提示词</span>
-            <textarea id="promptInput" rows="5" spellcheck="false"></textarea>
-          </label>
-
-          <div class="actions ai-settings-actions">
-            <button id="resetPromptButton" type="button">
-              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/></svg>
-              <span class="button-label">默认提示词</span>
-            </button>
-            <button id="saveAiSettingsButton" type="button">
-              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h12l2 2v14H5z"/><path d="M8 4v6h8V4"/><path d="M8 20v-6h8v6"/></svg>
+          <div class="actions">
+            <button id="saveGroqSettingsButton" type="button">
               <span class="button-label">保存设置</span>
             </button>
           </div>
-        </div>
-
-        <button id="summarizeButton" class="primary soft" type="button" disabled>
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.4 4.2L18 8.6l-4.2 1.5L12 15l-1.8-4.9L6 8.6l4.6-1.4L12 3Z"/><path d="m18 14 .8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8L18 14Z"/></svg>
-          <span class="button-label">AI 总结字幕</span>
-        </button>
-        <pre id="summaryPreview" class="summary" hidden></pre>
-        <div class="actions ai-actions">
-          <button id="copySummaryButton" type="button" disabled>
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h10v12H8z"/><path d="M6 16H4V4h12v2"/></svg>
-            <span class="button-label">复制总结</span>
-          </button>
-          <button id="downloadSummaryButton" type="button" disabled>
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10"/><path d="m8 10 4 4 4-4"/><path d="M5 20h14"/></svg>
-            <span class="button-label">下载总结</span>
-          </button>
         </div>
       </section>
 

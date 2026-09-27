@@ -3,63 +3,26 @@ const state = {
   metadata: null,
   tracks: [],
   collection: null,
-  extractMode: "single",
   result: null,
   activeResult: null,
-  summary: "",
-  aiSettings: {
-    provider: "openai",
+  groqSettings: {
     apiKey: "",
-    model: "gpt-5.5",
-    baseUrl: "https://api.openai.com/v1",
-    prompt: ""
-  }
+    model: "whisper-large-v3-turbo",
+    language: "auto"
+  },
+  autoRunToken: 0
 };
-
-const DEFAULT_AI_PROMPT = [
-  "你是一个中文视频内容分析助手。",
-  "根据字幕输出结构化总结，不要编造字幕中没有的信息。",
-  "输出包含：一句话概括、要点列表、关键术语、适合复习的时间线。"
-].join("\n");
 
 const RESULT_CACHE_KEY = "chronoLastSubtitleResult";
 const RESULT_CACHE_CHUNK_PREFIX = "chronoLastSubtitleResultChunk";
-const RESULT_CACHE_VERSION = 1;
+const RESULT_CACHE_VERSION = 2;
 const RESULT_CACHE_CHUNK_SIZE = 240000;
 const JSON_TIME_FIELDS = new Set(["startSeconds", "endSeconds", "durationSeconds"]);
 
-const AI_PROVIDERS = {
-  openai: {
-    label: "OpenAI",
-    apiKeyLabel: "OpenAI API Key",
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-5.5"
-  },
-  deepseek: {
-    label: "DeepSeek",
-    apiKeyLabel: "DeepSeek API Key",
-    baseUrl: "https://api.deepseek.com",
-    model: "deepseek-v4-flash"
-  },
-  qwen: {
-    label: "Qwen / 阿里云百炼",
-    apiKeyLabel: "DashScope API Key",
-    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    model: "qwen-plus"
-  },
-  minimax: {
-    label: "MiniMax",
-    apiKeyLabel: "MiniMax API Key",
-    baseUrl: "https://api.minimax.io/v1",
-    model: "MiniMax-M1"
-  },
-  custom: {
-    label: "自定义兼容接口",
-    apiKeyLabel: "API Key",
-    baseUrl: "",
-    model: ""
-  }
-};
+const GROQ_STORAGE_KEYS = ["groqApiKey", "groqModel", "groqLanguage"];
+const GROQ_DEFAULT_MODEL = "whisper-large-v3-turbo";
+const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions";
+const GROQ_MAX_BYTES = 25 * 1024 * 1024;
 
 const PLATFORM_CONFIG = {
   bilibili: {
@@ -68,7 +31,7 @@ const PLATFORM_CONFIG = {
     messageTypes: {
       getTracks: "BCE_GET_BILIBILI_TRACKS",
       extractSubtitle: "BCE_EXTRACT_BILIBILI_SUBTITLE",
-      extractCollectionSubtitles: "BCE_EXTRACT_BILIBILI_COLLECTION_SUBTITLES"
+      getAudioSource: "BCE_GET_BILIBILI_AUDIO_SOURCE"
     },
     isVideoUrl: isBilibiliVideoUrl,
     parseVideoId: parseBilibiliVideoId,
@@ -79,7 +42,8 @@ const PLATFORM_CONFIG = {
     authorLabel: "频道",
     messageTypes: {
       getTracks: "BCE_GET_YOUTUBE_TRACKS",
-      extractSubtitle: "BCE_EXTRACT_YOUTUBE_SUBTITLE"
+      extractSubtitle: "BCE_EXTRACT_YOUTUBE_SUBTITLE",
+      getAudioSource: "BCE_GET_YOUTUBE_AUDIO_SOURCE"
     },
     isVideoUrl: isYouTubeVideoUrl,
     parseVideoId: parseYouTubeVideoId,
@@ -111,20 +75,12 @@ const EXPORT_FORMATS = {
 };
 
 const BUTTON_ICON_HTML = {
-  loadTracksButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8A2.5 2.5 0 0 1 17.5 16H9l-4 4v-4.5A2.5 2.5 0 0 1 4 13.5v-8Z"/><path d="M8 8h8M8 11.5h5"/></svg>',
-  extractButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11"/><path d="m7 9 5 5 5-5"/><path d="M5 19h14"/></svg>',
-  extractCollectionButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h6l2 2h8v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M8 12h8M8 15h5"/></svg>',
-  copyMarkdownButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h10v12H8z"/><path d="M6 16H4V4h12v2"/></svg>',
+  copyTextButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h10v12H8z"/><path d="M6 16H4V4h12v2"/></svg>',
   downloadMarkdownButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10"/><path d="m8 10 4 4 4-4"/><path d="M5 20h14"/></svg>',
   downloadJsonButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H6a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2h-2"/></svg>',
   downloadSrtButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v16H7z"/><path d="M10 8h4M10 12h4M10 16h2"/></svg>',
   downloadTxtButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>',
-  toggleAiSettingsButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="M19 12a7.2 7.2 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.3 3.1a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.5a7.2 7.2 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.3 3.1h5l.3-3.1a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1Z"/></svg>',
-  saveAiSettingsButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h12l2 2v14H5z"/><path d="M8 4v6h8V4"/><path d="M8 20v-6h8v6"/></svg>',
-  resetPromptButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/></svg>',
-  summarizeButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.4 4.2L18 8.6l-4.2 1.5L12 15l-1.8-4.9L6 8.6l4.6-1.4L12 3Z"/><path d="m18 14 .8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8L18 14Z"/></svg>',
-  copySummaryButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h10v12H8z"/><path d="M6 16H4V4h12v2"/></svg>',
-  downloadSummaryButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10"/><path d="m8 10 4 4 4-4"/><path d="M5 20h14"/></svg>'
+  extractCollectionButton: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h6l2 2h8v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M8 12h8M8 15h5"/></svg>'
 };
 
 const nodes = {
@@ -132,17 +88,8 @@ const nodes = {
   videoId: document.getElementById("videoId"),
   videoTitle: document.getElementById("videoTitle"),
   videoAuthor: document.getElementById("videoAuthor"),
-  loadTracksButton: document.getElementById("loadTracksButton"),
-  trackSelect: document.getElementById("trackSelect"),
-  extractModeTabs: document.getElementById("extractModeTabs"),
-  singleModeButton: document.getElementById("singleModeButton"),
-  collectionModeButton: document.getElementById("collectionModeButton"),
-  singleExtractPanel: document.getElementById("singleExtractPanel"),
-  collectionExtractPanel: document.getElementById("collectionExtractPanel"),
-  collectionRangeField: document.getElementById("collectionRangeField"),
-  collectionRangeSelect: document.getElementById("collectionRangeSelect"),
-  extractButton: document.getElementById("extractButton"),
-  extractCollectionButton: document.getElementById("extractCollectionButton"),
+  statusCard: document.getElementById("statusCard"),
+  autoStatusText: document.getElementById("autoStatusText"),
   resultPanel: document.getElementById("resultPanel"),
   segmentCount: document.getElementById("segmentCount"),
   selectedLanguage: document.getElementById("selectedLanguage"),
@@ -150,25 +97,27 @@ const nodes = {
   collectionPanel: document.getElementById("collectionPanel"),
   collectionCount: document.getElementById("collectionCount"),
   collectionList: document.getElementById("collectionList"),
-  copyMarkdownButton: document.getElementById("copyMarkdownButton"),
+  copyTextButton: document.getElementById("copyTextButton"),
   downloadMarkdownButton: document.getElementById("downloadMarkdownButton"),
   downloadJsonButton: document.getElementById("downloadJsonButton"),
   downloadSrtButton: document.getElementById("downloadSrtButton"),
   downloadTxtButton: document.getElementById("downloadTxtButton"),
-  toggleAiSettingsButton: document.getElementById("toggleAiSettingsButton"),
-  aiSettings: document.getElementById("aiSettings"),
-  providerSelect: document.getElementById("providerSelect"),
-  apiKeyLabel: document.getElementById("apiKeyLabel"),
-  apiKeyInput: document.getElementById("apiKeyInput"),
-  modelInput: document.getElementById("modelInput"),
-  baseUrlInput: document.getElementById("baseUrlInput"),
-  promptInput: document.getElementById("promptInput"),
-  resetPromptButton: document.getElementById("resetPromptButton"),
-  saveAiSettingsButton: document.getElementById("saveAiSettingsButton"),
-  summarizeButton: document.getElementById("summarizeButton"),
-  summaryPreview: document.getElementById("summaryPreview"),
-  copySummaryButton: document.getElementById("copySummaryButton"),
-  downloadSummaryButton: document.getElementById("downloadSummaryButton"),
+  trackSelect: document.getElementById("trackSelect"),
+  switchTrackButton: document.getElementById("switchTrackButton"),
+  noSubtitlePanel: document.getElementById("noSubtitlePanel"),
+  transcribeButton: document.getElementById("transcribeButton"),
+  groqProgress: document.getElementById("groqProgress"),
+  extractFailedPanel: document.getElementById("extractFailedPanel"),
+  extractFailedText: document.getElementById("extractFailedText"),
+  retryExtractButton: document.getElementById("retryExtractButton"),
+  fallbackGroqButton: document.getElementById("fallbackGroqButton"),
+  groqFallbackProgress: document.getElementById("groqFallbackProgress"),
+  toggleGroqSettingsButton: document.getElementById("toggleGroqSettingsButton"),
+  groqSettings: document.getElementById("groqSettings"),
+  groqApiKeyInput: document.getElementById("groqApiKeyInput"),
+  groqModelInput: document.getElementById("groqModelInput"),
+  groqLanguageInput: document.getElementById("groqLanguageInput"),
+  saveGroqSettingsButton: document.getElementById("saveGroqSettingsButton"),
   message: document.getElementById("message")
 };
 
@@ -176,7 +125,7 @@ init();
 
 async function init() {
   bindEvents();
-  await loadAiSettings();
+  await loadGroqSettings();
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   state.tab = tab;
@@ -186,9 +135,7 @@ async function init() {
     setStatus("不支持", "error");
     nodes.videoTitle.textContent = "请打开 B 站或 YouTube 视频页面";
     nodes.videoId.textContent = "-";
-    nodes.loadTracksButton.disabled = true;
-    nodes.extractModeTabs.hidden = true;
-    selectExtractMode("single");
+    nodes.statusCard.hidden = true;
     setMessage("支持 https://www.bilibili.com/video/BV... 和 https://www.youtube.com/watch?v=... 页面。", true);
     return;
   }
@@ -198,170 +145,166 @@ async function init() {
   nodes.videoId.textContent = videoId || "-";
   nodes.videoTitle.textContent = tab.title ? cleanPlatformTitle(tab.title, platform) : `已检测到 ${getPlatformLabel(platform)} 视频`;
   const restored = await restoreCachedResult(platform, videoId);
-  if (!restored) {
-    setMessage("点击获取字幕轨道。");
-  }
+  if (restored) return;
+  await autoPrepareSubtitles();
 }
 
 function bindEvents() {
-  nodes.loadTracksButton.addEventListener("click", loadTracks);
-  nodes.singleModeButton.addEventListener("click", () => selectExtractMode("single"));
-  nodes.collectionModeButton.addEventListener("click", () => selectExtractMode("collection"));
-  nodes.extractButton.addEventListener("click", extractSubtitle);
-  nodes.extractCollectionButton.addEventListener("click", extractCollectionSubtitles);
-  nodes.copyMarkdownButton.addEventListener("click", copyMarkdown);
+  nodes.copyTextButton.addEventListener("click", copyPlainText);
   nodes.downloadMarkdownButton.addEventListener("click", () => downloadText("md"));
   nodes.downloadJsonButton.addEventListener("click", () => downloadText("json"));
   nodes.downloadSrtButton.addEventListener("click", () => downloadText("srt"));
   nodes.downloadTxtButton.addEventListener("click", () => downloadText("txt"));
-  nodes.toggleAiSettingsButton.addEventListener("click", toggleAiSettings);
-  nodes.providerSelect.addEventListener("change", applyProviderPreset);
-  nodes.resetPromptButton.addEventListener("click", resetPromptToDefault);
-  nodes.saveAiSettingsButton.addEventListener("click", saveAiSettings);
-  nodes.summarizeButton.addEventListener("click", summarizeWithAi);
-  nodes.copySummaryButton.addEventListener("click", copySummary);
-  nodes.downloadSummaryButton.addEventListener("click", downloadSummary);
+  nodes.switchTrackButton.addEventListener("click", switchTrackAndExtract);
+  nodes.transcribeButton.addEventListener("click", () => transcribeWithGroq(nodes.groqProgress));
+  nodes.retryExtractButton.addEventListener("click", () => autoPrepareSubtitles(true));
+  nodes.fallbackGroqButton.addEventListener("click", () => transcribeWithGroq(nodes.groqFallbackProgress));
+  nodes.toggleGroqSettingsButton.addEventListener("click", toggleGroqSettings);
+  nodes.saveGroqSettingsButton.addEventListener("click", saveGroqSettings);
 }
 
-async function loadTracks() {
-  await refreshActiveTab();
-  setBusy(nodes.loadTracksButton, true, "获取中");
-  setMessage("正在读取当前页面字幕轨道。");
-  nodes.resultPanel.hidden = true;
-  nodes.collectionPanel.hidden = true;
-
-  try {
-    const data = await sendToContent(getMessageType("getTracks"));
-    state.metadata = data;
-    state.tracks = data.availableTracks || [];
-    state.collection = data.collection?.items?.length ? data.collection : null;
-    state.extractMode = "single";
-    state.result = null;
-    state.activeResult = null;
-    state.summary = "";
-    resetSummary();
-    nodes.summarizeButton.disabled = true;
-
-    nodes.videoId.textContent = data.videoId || parsePlatformVideoId(state.tab.url, data.platform) || "-";
-    nodes.videoTitle.textContent = data.title || "未命名视频";
-    nodes.videoAuthor.textContent = data.author ? `${getPlatformAuthorLabel(data.platform)}：${data.author}` : "";
-
-    renderTracks();
-
-    if (!state.tracks.length) {
-      nodes.extractButton.disabled = true;
-      updateCollectionButton();
-      setMessage("当前视频没有暴露字幕轨道。", true);
-      return;
-    }
-
-    nodes.extractButton.disabled = false;
-    updateCollectionButton();
-    const collectionCount = getCollectionItems().length;
-    const collectionSuffix = collectionCount > 1 ? `，检测到合集 ${collectionCount} 个视频。` : "";
-    setMessage(`找到 ${state.tracks.length} 条字幕轨道${collectionSuffix}`);
-  } catch (error) {
-    setMessage(error.message, true);
-  } finally {
-    setBusy(nodes.loadTracksButton, false, "获取字幕轨道");
-  }
-}
-
-function updateCollectionButton() {
-  const isBilibili = (state.metadata?.platform || getSupportedPlatform(state.tab?.url)) === "bilibili";
-  const hasCollection = isBilibili && hasBilibiliCollection();
-  nodes.extractModeTabs.hidden = !hasCollection;
-  nodes.collectionModeButton.disabled = !hasCollection;
-  nodes.extractCollectionButton.disabled = !hasCollection || !state.tracks.length;
-  if (hasCollection) {
-    updateCollectionRangeOptions();
-  } else {
-    state.extractMode = "single";
-  }
-  selectExtractMode(state.extractMode === "collection" && hasCollection ? "collection" : "single");
-}
-
-function selectExtractMode(mode) {
-  const hasCollection = hasBilibiliCollection();
-  state.extractMode = mode === "collection" && hasCollection ? "collection" : "single";
-  const isCollectionMode = state.extractMode === "collection";
-
-  nodes.singleModeButton.classList.toggle("active", !isCollectionMode);
-  nodes.collectionModeButton.classList.toggle("active", isCollectionMode);
-  nodes.singleExtractPanel.hidden = isCollectionMode;
-  nodes.collectionExtractPanel.hidden = !isCollectionMode;
-}
-
-function hasBilibiliCollection() {
-  return getCollectionItems().length > 1;
-}
-
-function getCollectionItems() {
-  return getCollectionMetadata()?.items || [];
-}
-
-function getCollectionMetadata() {
-  if (state.collection?.items?.length) return state.collection;
-  if (state.metadata?.collection?.items?.length) return state.metadata.collection;
-  if (state.result?.collection?.items?.length) return state.result.collection;
-  return null;
-}
-
-function updateCollectionRangeOptions() {
-  const total = getCollectionItems().length;
-  const currentValue = nodes.collectionRangeSelect.value || "20";
-  const options = [
-    { value: "20", label: `前 ${Math.min(20, total)} 个` },
-    { value: "50", label: `前 ${Math.min(50, total)} 个` },
-    { value: "100", label: `前 ${Math.min(100, total)} 个` },
-    { value: "all", label: `全部 ${total} 个` }
-  ].filter((option, index, list) => index === list.findIndex((item) => item.label === option.label));
-
-  nodes.collectionRangeSelect.innerHTML = "";
-  for (const option of options) {
-    const node = document.createElement("option");
-    node.value = option.value;
-    node.textContent = option.label;
-    nodes.collectionRangeSelect.appendChild(node);
-  }
-  nodes.collectionRangeSelect.value = options.some((option) => option.value === currentValue) ? currentValue : "20";
-}
-
-function getCollectionRangePayload() {
-  const value = nodes.collectionRangeSelect.value || "20";
-  const total = getCollectionItems().length;
-  const limit = value === "all" ? total : Math.min(Number(value) || 20, total);
-  return {
-    startIndex: 0,
-    endIndex: limit,
-    label: value === "all" ? `全部 ${total} 个` : `前 ${limit} 个`
-  };
-}
-
-async function extractSubtitle() {
+async function autoPrepareSubtitles(isRetry = false) {
+  const runToken = ++state.autoRunToken;
   await refreshActiveTab();
   const platform = getSupportedPlatform(state.tab?.url);
-  const currentVideoId = parsePlatformVideoId(state.tab?.url, platform);
-  if (state.metadata?.videoId && currentVideoId && state.metadata.videoId !== currentVideoId) {
-    state.result = null;
-    state.activeResult = null;
-    state.summary = "";
-    nodes.extractButton.disabled = true;
-    nodes.summarizeButton.disabled = true;
-    resetSummary();
-    setMessage("当前页面已切换到新视频，请重新获取字幕轨道。", true);
+  if (!platform) return;
+  if (!isRetry) {
+    const videoId = parsePlatformVideoId(state.tab?.url, platform);
+    const restored = await restoreCachedResult(platform, videoId);
+    if (restored && runToken === state.autoRunToken) return;
+  }
+
+  hideAllPanels();
+  nodes.statusCard.hidden = false;
+  setAutoStatus("正在读取字幕…");
+  setMessage("正在读取字幕…");
+
+  let metadata;
+  try {
+    metadata = await sendToContent(getMessageType("getTracks"));
+  } catch (error) {
+    if (runToken !== state.autoRunToken) return;
+    showExtractFailed(error.message || "读取字幕轨道失败。");
     return;
   }
 
+  if (runToken !== state.autoRunToken) return;
+  state.metadata = metadata;
+  state.tracks = metadata.availableTracks || [];
+  state.collection = metadata.collection?.items?.length ? metadata.collection : null;
+  state.result = null;
+  state.activeResult = null;
+
+  nodes.videoId.textContent = metadata.videoId || parsePlatformVideoId(state.tab.url, metadata.platform) || "-";
+  nodes.videoTitle.textContent = metadata.title || "未命名视频";
+  nodes.videoAuthor.textContent = metadata.author ? `${getPlatformAuthorLabel(metadata.platform)}：${metadata.author}` : "";
+
+  renderTracks();
+
+  if (!state.tracks.length) {
+    nodes.statusCard.hidden = true;
+    nodes.noSubtitlePanel.hidden = false;
+    setMessage("当前视频没有可用字幕，可以使用 Groq 转录。");
+    return;
+  }
+
+  const track = await pickBestTrackWithPreference(state.tracks);
+  if (track) {
+    nodes.trackSelect.value = track.id;
+    nodes.switchTrackButton.disabled = false;
+    try {
+      await rememberPreferredLanguage(track.language);
+    } catch (_error) {
+      // Preferred language is best-effort only.
+    }
+  }
+
+  setAutoStatus("正在提取字幕…");
+  setMessage("正在提取字幕…");
+
+  try {
+    const data = await sendToContent(getMessageType("extractSubtitle"), {
+      track,
+      metadata: state.metadata,
+      availableTracks: state.tracks
+    });
+    if (runToken !== state.autoRunToken) return;
+    state.result = data;
+    state.activeResult = data;
+    renderResult(data);
+    await saveResultCache();
+    setMessage(`已提取 ${data.segments?.length || 0} 段。`);
+  } catch (error) {
+    if (runToken !== state.autoRunToken) return;
+    showExtractFailed(error.message || "字幕提取失败。");
+  }
+}
+
+function hideAllPanels() {
+  nodes.statusCard.hidden = true;
+  nodes.resultPanel.hidden = true;
+  nodes.noSubtitlePanel.hidden = true;
+  nodes.extractFailedPanel.hidden = true;
+}
+
+function setAutoStatus(text) {
+  nodes.statusCard.hidden = false;
+  nodes.autoStatusText.textContent = text;
+}
+
+function showExtractFailed(errorMessage) {
+  nodes.statusCard.hidden = true;
+  nodes.resultPanel.hidden = true;
+  nodes.noSubtitlePanel.hidden = true;
+  nodes.extractFailedPanel.hidden = false;
+  nodes.extractFailedText.textContent = `平台字幕暂时无法读取：${errorMessage}`;
+  setMessage(errorMessage, true);
+}
+
+function normalizeLanguage(value) {
+  return String(value || "").toLowerCase().replace(/_/g, "-").split("-")[0];
+}
+
+function trackScore(track, preferredBase, browserBase) {
+  const base = normalizeLanguage(track.language);
+  const isAuto = track.source === "auto" || track.kind === "asr";
+  let score = 1000;
+  if (preferredBase && base === preferredBase) score -= 400;
+  if (browserBase && base === browserBase) score -= 200;
+  // Manual subtitles rank above auto subtitles; Bilibili marks normal tracks as unknown.
+  if (!isAuto) score -= 150;
+  return score;
+}
+
+async function pickBestTrackWithPreference(tracks) {
+  if (!tracks?.length) return null;
+  const stored = await chrome.storage.local.get(["chronoPreferredLanguage"]).catch(() => ({}));
+  const preferredBase = normalizeLanguage(stored.chronoPreferredLanguage || "");
+  const browserBase = normalizeLanguage(navigator.language || "zh");
+  const ranked = [...tracks].sort((a, b) => {
+    return trackScore(a, preferredBase, browserBase) - trackScore(b, preferredBase, browserBase);
+  });
+  return ranked[0];
+}
+
+async function rememberPreferredLanguage(language) {
+  const base = normalizeLanguage(language);
+  if (!base || base === "unknown") return;
+  await chrome.storage.local.set({ chronoPreferredLanguage: base });
+}
+
+async function switchTrackAndExtract() {
   const track = state.tracks.find((item) => item.id === nodes.trackSelect.value);
   if (!track) {
     setMessage("请先选择字幕语言。", true);
     return;
   }
-
-  setBusy(nodes.extractButton, true, "提取中");
-  setMessage("正在拉取字幕内容。");
-
+  try {
+    await rememberPreferredLanguage(track.language);
+  } catch (_error) {
+    // Ignore storage failures.
+  }
+  setMessage("正在切换字幕并重新提取…");
   try {
     const data = await sendToContent(getMessageType("extractSubtitle"), {
       track,
@@ -370,71 +313,208 @@ async function extractSubtitle() {
     });
     state.result = data;
     state.activeResult = data;
-    state.summary = "";
     renderResult(data);
-    resetSummary();
-    nodes.summarizeButton.disabled = false;
-    const cached = await saveResultCache();
-    if (cached) setMessage("字幕提取完成。");
+    await saveResultCache();
+    setMessage(`已提取 ${data.segments?.length || 0} 段。`);
   } catch (error) {
     setMessage(error.message, true);
-  } finally {
-    setBusy(nodes.extractButton, false, "提取字幕");
   }
 }
 
-async function extractCollectionSubtitles() {
+async function loadGroqSettings() {
+  const stored = await chrome.storage.local.get(GROQ_STORAGE_KEYS);
+  state.groqSettings.apiKey = stored.groqApiKey || "";
+  state.groqSettings.model = stored.groqModel || GROQ_DEFAULT_MODEL;
+  state.groqSettings.language = stored.groqLanguage || "auto";
+
+  nodes.groqApiKeyInput.value = state.groqSettings.apiKey;
+  nodes.groqModelInput.value = state.groqSettings.model;
+  nodes.groqLanguageInput.value = state.groqSettings.language;
+}
+
+async function saveGroqSettings() {
+  const apiKey = nodes.groqApiKeyInput.value.trim();
+  const model = nodes.groqModelInput.value.trim() || GROQ_DEFAULT_MODEL;
+  const language = nodes.groqLanguageInput.value.trim() || "auto";
+
+  await chrome.storage.local.set({
+    groqApiKey: apiKey,
+    groqModel: model,
+    groqLanguage: language
+  });
+
+  state.groqSettings.apiKey = apiKey;
+  state.groqSettings.model = model;
+  state.groqSettings.language = language;
+  showButtonFeedback(nodes.saveGroqSettingsButton, "已保存", "保存设置");
+  setMessage("Groq 设置已保存。");
+}
+
+function toggleGroqSettings() {
+  const nextHidden = !nodes.groqSettings.hidden;
+  nodes.groqSettings.hidden = nextHidden;
+  setButtonLabel(nodes.toggleGroqSettingsButton, nextHidden ? "设置" : "收起");
+}
+
+async function transcribeWithGroq(progressNode) {
   await refreshActiveTab();
   const platform = getSupportedPlatform(state.tab?.url);
-  if (platform !== "bilibili") {
-    setMessage("合集批量提取目前只支持 B 站。", true);
+  if (!platform) {
+    setMessage("当前页面不受支持。", true);
     return;
   }
 
-  const track = state.tracks.find((item) => item.id === nodes.trackSelect.value);
-  if (!track) {
-    setMessage("请先选择字幕语言。", true);
+  if (!state.groqSettings.apiKey) {
+    nodes.groqSettings.hidden = false;
+    setButtonLabel(nodes.toggleGroqSettingsButton, "收起");
+    setMessage("请先填写并保存 Groq API Key。", true);
     return;
   }
 
-  const collection = getCollectionMetadata();
-  if (!collection?.items?.length) {
-    setMessage("当前页面没有检测到合集列表。", true);
-    return;
-  }
-
-  setBusy(nodes.extractCollectionButton, true, "提取中");
-  nodes.extractButton.disabled = true;
-  const range = getCollectionRangePayload();
-  setMessage(`正在批量提取合集字幕，范围：${range.label}，可能需要一点时间。`);
+  setGroqProgress(progressNode, "正在获取音频地址…");
+  nodes.transcribeButton.disabled = true;
+  nodes.fallbackGroqButton.disabled = true;
+  setMessage("正在获取音频地址…");
 
   try {
-    const data = await sendLongTaskToContent(getMessageType("extractCollectionSubtitles"), {
-      track,
-      metadata: state.metadata,
-      availableTracks: state.tracks,
-      collection,
-      range
+    const audioSource = await sendToContent(getAudioSourceMessageType(platform));
+    if (!audioSource?.url) throw new Error("当前页面没有返回可用音频地址。");
+    setGroqProgress(progressNode, "正在下载音频…");
+    setMessage("正在下载音频…");
+    const audioBlob = await fetchAudioBlob(audioSource.url, platform);
+    setGroqProgress(progressNode, "正在调用 Groq Whisper…");
+    setMessage("正在调用 Groq Whisper…");
+    const groqJson = await requestGroqTranscription(audioBlob, audioSource.mimeType);
+    const result = normalizeGroqResult(groqJson, {
+      platform,
+      videoId: parsePlatformVideoId(state.tab?.url, platform) || state.metadata?.videoId || audioSource.videoId,
+      url: state.tab?.url || state.metadata?.url,
+      title: state.metadata?.title || cleanPlatformTitle(state.tab?.title || "", platform),
+      author: state.metadata?.author || "",
+      language: state.groqSettings.language
     });
-    state.result = data;
-    state.activeResult = data;
-    state.summary = "";
-    renderResult(data);
-    resetSummary();
-    nodes.summarizeButton.disabled = false;
-    const cached = await saveResultCache();
-    const requestedCount = data.collection?.requestedCount || data.items?.length || 0;
-    const skippedCount = requestedCount ? requestedCount - (data.collection?.successCount || data.items?.length || 0) : data.warnings?.length || 0;
-    if (cached) {
-      setMessage(`合集字幕提取完成：请求 ${requestedCount} 个，成功 ${data.items?.length || 0} 个${skippedCount ? `，跳过 ${skippedCount} 个` : ""}。`, skippedCount > 0);
-    }
+    state.metadata = state.metadata || {
+      platform,
+      videoId: result.videoId,
+      url: result.url,
+      title: result.title,
+      author: result.author
+    };
+    state.tracks = [];
+    state.result = result;
+    state.activeResult = result;
+    renderResult(result);
+    await saveResultCache();
+    setGroqProgress(progressNode, "");
+    setMessage(`Groq 转录完成，已提取 ${result.segments.length} 段。`);
   } catch (error) {
+    setGroqProgress(progressNode, "");
     setMessage(error.message, true);
   } finally {
-    setBusy(nodes.extractCollectionButton, false, "提取合集");
-    nodes.extractCollectionButton.disabled = !hasBilibiliCollection() || !state.tracks.length;
-    nodes.extractButton.disabled = !state.tracks.length;
+    nodes.transcribeButton.disabled = false;
+    nodes.fallbackGroqButton.disabled = false;
   }
+}
+
+function setGroqProgress(progressNode, text) {
+  if (!progressNode) return;
+  progressNode.hidden = !text;
+  progressNode.textContent = text || "";
+}
+
+function getAudioSourceMessageType(platform) {
+  const type = PLATFORM_CONFIG[platform]?.messageTypes?.getAudioSource;
+  if (!type) throw new Error("当前页面平台不支持音频获取。");
+  return type;
+}
+
+async function fetchAudioBlob(audioUrl, platform) {
+  const response = await fetch(audioUrl, {
+    credentials: platform === "bilibili" ? "include" : "omit",
+    referrer: state.tab?.url || location.href
+  });
+  if (!response.ok) {
+    throw new Error(`音频下载失败：HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  if (!blob.size) throw new Error("音频下载为空。");
+  if (blob.size > GROQ_MAX_BYTES) {
+    throw new Error("音频文件过大，当前版本暂不支持自动分片。");
+  }
+  return blob;
+}
+
+async function requestGroqTranscription(audioBlob, mimeType) {
+  const formData = new FormData();
+  formData.append("file", audioBlob, guessAudioFilename(mimeType));
+  formData.append("model", state.groqSettings.model || GROQ_DEFAULT_MODEL);
+  formData.append("response_format", "verbose_json");
+  const language = normalizeLanguage(state.groqSettings.language);
+  if (language && language !== "auto") {
+    formData.append("language", language);
+  }
+
+  const response = await fetch(GROQ_ENDPOINT, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${state.groqSettings.apiKey}`
+    },
+    body: formData
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = data?.error?.message || data?.message || `Groq API HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+function guessAudioFilename(mimeType) {
+  const normalized = String(mimeType || "").toLowerCase();
+  if (normalized.includes("webm")) return "audio.webm";
+  if (normalized.includes("ogg")) return "audio.ogg";
+  if (normalized.includes("wav")) return "audio.wav";
+  return "audio.m4a";
+}
+
+function normalizeGroqResult(groqJson, context) {
+  const rawSegments = Array.isArray(groqJson?.segments) ? groqJson.segments : [];
+  const segments = rawSegments
+    .map((segment) => {
+      const startSeconds = Number(segment.start);
+      const endSeconds = Number(segment.end);
+      return {
+        startSeconds,
+        durationSeconds: Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds
+          ? endSeconds - startSeconds
+          : undefined,
+        text: String(segment.text || "").trim()
+      };
+    })
+    .filter((segment) => Number.isFinite(segment.startSeconds) && segment.text.length > 0);
+
+  if (!segments.length) {
+    throw new Error("Groq 返回了空转录结果。");
+  }
+
+  return {
+    platform: context.platform,
+    videoId: context.videoId,
+    url: context.url,
+    title: context.title || "未命名视频",
+    author: context.author || "",
+    selectedTrack: {
+      id: "groq-whisper",
+      platform: context.platform,
+      language: normalizeLanguage(context.language) || state.groqSettings.language || "auto",
+      label: "Groq Whisper",
+      source: "asr"
+    },
+    availableTracks: [],
+    segments,
+    text: segments.map((segment) => segment.text).join("\n"),
+    warnings: []
+  };
 }
 
 async function refreshActiveTab() {
@@ -451,6 +531,7 @@ function renderTracks() {
     option.textContent = "没有可用字幕";
     nodes.trackSelect.appendChild(option);
     nodes.trackSelect.disabled = true;
+    nodes.switchTrackButton.disabled = true;
     return;
   }
 
@@ -462,9 +543,13 @@ function renderTracks() {
   }
 
   nodes.trackSelect.disabled = false;
+  nodes.switchTrackButton.disabled = false;
 }
 
 function renderResult(result) {
+  nodes.statusCard.hidden = true;
+  nodes.noSubtitlePanel.hidden = true;
+  nodes.extractFailedPanel.hidden = true;
   nodes.resultPanel.hidden = false;
   state.activeResult = result;
   renderCollectionList(result);
@@ -489,29 +574,34 @@ async function restoreCachedResult(platform, videoId) {
 
   state.metadata = cache.metadata || null;
   state.tracks = cache.tracks || cache.result?.availableTracks || [];
-  state.collection = cache.collection || state.metadata?.collection || cache.result?.collection || null;
   state.result = cache.result;
   state.activeResult = cache.result;
-  state.summary = cache.summary || "";
 
   if (state.metadata) {
     nodes.videoId.textContent = state.metadata.videoId || videoId || "-";
     nodes.videoTitle.textContent = state.metadata.title || state.result.title || nodes.videoTitle.textContent;
     nodes.videoAuthor.textContent = state.metadata.author ? `${getPlatformAuthorLabel(state.metadata.platform)}：${state.metadata.author}` : "";
+  } else if (state.result) {
+    nodes.videoId.textContent = state.result.videoId || videoId || "-";
+    nodes.videoTitle.textContent = state.result.title || nodes.videoTitle.textContent;
+    nodes.videoAuthor.textContent = state.result.author ? `${getPlatformAuthorLabel(state.result.platform)}：${state.result.author}` : "";
   }
 
   renderTracks();
-  if (cache.selectedTrackId && state.tracks.some((track) => track.id === cache.selectedTrackId)) {
+  if (state.tracks.length && cache.selectedTrackId && state.tracks.some((track) => track.id === cache.selectedTrackId)) {
     nodes.trackSelect.value = cache.selectedTrackId;
+  } else if (state.result?.selectedTrack?.id === "groq-whisper") {
+    nodes.trackSelect.innerHTML = "";
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Groq Whisper 转录";
+    nodes.trackSelect.appendChild(option);
+    nodes.trackSelect.disabled = true;
+    nodes.switchTrackButton.disabled = true;
   }
-  nodes.extractButton.disabled = !state.tracks.length;
-  updateCollectionButton();
   renderResult(state.result);
   state.activeResult = state.result;
   renderActiveResult();
-  if (state.summary) renderSummary(state.summary);
-  else resetSummary();
-  nodes.summarizeButton.disabled = !state.activeResult;
   setMessage(`已恢复上次提取结果：${formatCacheAge(cache.savedAt)}。`);
   return true;
 }
@@ -532,17 +622,19 @@ async function saveResultCache() {
 
   const platform = state.result.platform || state.metadata?.platform || getSupportedPlatform(state.tab?.url);
   const videoId = parsePlatformVideoId(state.tab?.url, platform) || state.metadata?.videoId || state.result.videoId;
+  const selectedTrackId = state.result.selectedTrack?.id === "groq-whisper"
+    ? "groq-whisper"
+    : nodes.trackSelect.value;
   const cache = {
     version: RESULT_CACHE_VERSION,
     savedAt: Date.now(),
     platform,
     videoId,
-    selectedTrackId: nodes.trackSelect.value,
+    selectedTrackId,
     metadata: state.metadata,
     tracks: state.tracks,
     collection: state.collection,
-    result: state.result,
-    summary: state.summary
+    result: state.result
   };
 
   try {
@@ -656,10 +748,7 @@ function selectCollectionTarget(targetId) {
   state.activeResult = targetId === "collection"
     ? state.result
     : state.result.items.find((item) => String(item.collectionIndex) === targetId) || state.result;
-  state.summary = "";
-  resetSummary();
   renderActiveResult();
-  nodes.summarizeButton.disabled = !state.activeResult;
   setMessage(targetId === "collection" ? "已切换到合集总览。" : "已切换到单个视频。");
 }
 
@@ -668,237 +757,6 @@ function updateCollectionSelection() {
   for (const button of nodes.collectionList.querySelectorAll(".collection-item")) {
     button.classList.toggle("active", button.dataset.targetId === activeId);
   }
-}
-
-async function loadAiSettings() {
-  const stored = await chrome.storage.local.get([
-    "aiProvider",
-    "aiProviderSettings",
-    "aiSummaryPrompt",
-    "openaiApiKey",
-    "openaiModel"
-  ]);
-  const provider = stored.aiProvider || "openai";
-  const savedByProvider = stored.aiProviderSettings || {};
-  const defaults = AI_PROVIDERS[provider] || AI_PROVIDERS.openai;
-  const saved = savedByProvider[provider] || {};
-
-  state.aiSettings.provider = provider;
-  state.aiSettings.apiKey = saved.apiKey || (provider === "openai" ? stored.openaiApiKey : "") || "";
-  state.aiSettings.model = saved.model || (provider === "openai" ? stored.openaiModel : "") || defaults.model;
-  state.aiSettings.baseUrl = saved.baseUrl || defaults.baseUrl;
-  state.aiSettings.prompt = normalizePrompt(stored.aiSummaryPrompt);
-
-  nodes.providerSelect.value = provider;
-  nodes.apiKeyInput.value = state.aiSettings.apiKey;
-  nodes.modelInput.value = state.aiSettings.model;
-  nodes.baseUrlInput.value = state.aiSettings.baseUrl;
-  nodes.promptInput.value = state.aiSettings.prompt;
-  renderProviderLabels();
-}
-
-async function saveAiSettings() {
-  const provider = nodes.providerSelect.value;
-  const apiKey = nodes.apiKeyInput.value.trim();
-  const defaults = AI_PROVIDERS[provider] || AI_PROVIDERS.custom;
-  const model = nodes.modelInput.value.trim() || defaults.model;
-  const baseUrl = normalizeBaseUrl(nodes.baseUrlInput.value.trim() || defaults.baseUrl);
-  const prompt = normalizePrompt(nodes.promptInput.value);
-  const stored = await chrome.storage.local.get(["aiProviderSettings"]);
-  const aiProviderSettings = stored.aiProviderSettings || {};
-  aiProviderSettings[provider] = { apiKey, model, baseUrl };
-
-  await chrome.storage.local.set({
-    aiProvider: provider,
-    aiProviderSettings,
-    aiSummaryPrompt: prompt
-  });
-
-  state.aiSettings.provider = provider;
-  state.aiSettings.apiKey = apiKey;
-  state.aiSettings.model = model;
-  state.aiSettings.baseUrl = baseUrl;
-  state.aiSettings.prompt = prompt;
-  nodes.promptInput.value = prompt;
-  nodes.modelInput.value = model;
-  nodes.baseUrlInput.value = baseUrl;
-  showButtonFeedback(nodes.saveAiSettingsButton, "已保存", "保存设置");
-  setMessage(`${AI_PROVIDERS[provider]?.label || "AI"} 设置已保存。`);
-}
-
-function toggleAiSettings() {
-  const nextHidden = !nodes.aiSettings.hidden;
-  nodes.aiSettings.hidden = nextHidden;
-  setButtonLabel(nodes.toggleAiSettingsButton, nextHidden ? "设置" : "收起");
-}
-
-async function applyProviderPreset() {
-  const provider = nodes.providerSelect.value;
-  const defaults = AI_PROVIDERS[provider] || AI_PROVIDERS.custom;
-  const stored = await chrome.storage.local.get(["aiProviderSettings"]);
-  const saved = stored.aiProviderSettings?.[provider] || {};
-
-  nodes.apiKeyInput.value = saved.apiKey || "";
-  nodes.modelInput.value = saved.model || defaults.model;
-  nodes.baseUrlInput.value = saved.baseUrl || defaults.baseUrl;
-  renderProviderLabels();
-}
-
-function resetPromptToDefault() {
-  nodes.promptInput.value = DEFAULT_AI_PROMPT;
-  setMessage("已恢复默认总结提示词，保存后生效。");
-}
-
-function renderProviderLabels() {
-  const provider = nodes.providerSelect.value;
-  const defaults = AI_PROVIDERS[provider] || AI_PROVIDERS.custom;
-  nodes.apiKeyLabel.textContent = defaults.apiKeyLabel;
-  nodes.apiKeyInput.placeholder = provider === "qwen" ? "sk-..." : "sk-...";
-}
-
-async function summarizeWithAi() {
-  const result = getActiveResult();
-  if (!result) {
-    setMessage("请先提取字幕。", true);
-    return;
-  }
-
-  if (!state.aiSettings.apiKey) {
-    nodes.aiSettings.hidden = false;
-    setButtonLabel(nodes.toggleAiSettingsButton, "收起");
-    setMessage("请先填写并保存当前供应商的 API Key。", true);
-    return;
-  }
-
-  setBusy(nodes.summarizeButton, true, "总结中");
-  setMessage("正在生成 AI 总结。");
-
-  try {
-    const summary = await requestAiSummary(result);
-    state.summary = summary;
-    renderSummary(summary);
-    await saveResultCache();
-    setMessage("AI 总结完成。");
-  } catch (error) {
-    setMessage(error.message, true);
-  } finally {
-    setBusy(nodes.summarizeButton, false, "AI 总结字幕");
-    nodes.summarizeButton.disabled = !getActiveResult();
-  }
-}
-
-async function requestAiSummary(result) {
-  const transcript = trimTranscriptForAi(result.text);
-  const endpoint = buildChatCompletionsUrl(state.aiSettings.baseUrl);
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${state.aiSettings.apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: state.aiSettings.model,
-      messages: [
-        {
-          role: "system",
-          content: normalizePrompt(state.aiSettings.prompt)
-        },
-        {
-          role: "user",
-          content: [
-            `视频标题：${result.title}`,
-            `UP 主：${result.author || "未知"}`,
-            `字幕语言：${result.selectedTrack.label || result.selectedTrack.language}`,
-            "",
-            "字幕：",
-            transcript
-          ].join("\n")
-        }
-      ],
-      stream: false
-    })
-  });
-
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    const message = data?.error?.message || data?.message || `AI API HTTP ${response.status}`;
-    throw new Error(message);
-  }
-
-  const text = extractChatCompletionText(data);
-  if (!text) {
-    throw new Error("AI 接口返回了空总结。");
-  }
-
-  return text.trim();
-}
-
-function extractChatCompletionText(data) {
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => part.text || part.content || "")
-      .filter(Boolean)
-      .join("\n");
-  }
-  return "";
-}
-
-function buildChatCompletionsUrl(baseUrl) {
-  const normalized = normalizeBaseUrl(baseUrl);
-  if (!normalized) throw new Error("请先配置 Base URL。");
-  if (/\/chat\/completions$/i.test(normalized)) return normalized;
-  return `${normalized}/chat/completions`;
-}
-
-function normalizeBaseUrl(value) {
-  return String(value || "").replace(/\/+$/, "");
-}
-
-function normalizePrompt(value) {
-  const prompt = String(value || "").trim();
-  return prompt || DEFAULT_AI_PROMPT;
-}
-
-function trimTranscriptForAi(text) {
-  const maxChars = 28000;
-  const normalized = String(text || "").trim();
-  if (normalized.length <= maxChars) return normalized;
-  return `${normalized.slice(0, maxChars)}\n\n[字幕过长，已截取前 ${maxChars} 个字符用于总结]`;
-}
-
-function renderSummary(summary) {
-  nodes.summaryPreview.hidden = false;
-  nodes.summaryPreview.textContent = summary;
-  nodes.copySummaryButton.disabled = false;
-  nodes.downloadSummaryButton.disabled = false;
-}
-
-function resetSummary() {
-  nodes.summaryPreview.hidden = true;
-  nodes.summaryPreview.textContent = "";
-  nodes.copySummaryButton.disabled = true;
-  nodes.downloadSummaryButton.disabled = true;
-}
-
-async function copySummary() {
-  if (!state.summary) return;
-  await navigator.clipboard.writeText(state.summary);
-  showButtonFeedback(nodes.copySummaryButton, "已复制", "复制总结");
-  setMessage("AI 总结已复制。");
-}
-
-function downloadSummary() {
-  const result = getActiveResult();
-  if (!state.summary || !result) return;
-  const filename = `${safeFilename(`${result.title || result.videoId}-summary`)}.md`;
-  const text = [`# ${result.title}`, "", "## AI Summary", "", state.summary, ""].join("\n");
-  const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
-
-  chrome.downloads.download({ url, filename, saveAs: true }, () => {
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  });
 }
 
 function sendToContent(type, payload = {}) {
@@ -913,61 +771,6 @@ function sendToContent(type, payload = {}) {
     });
 
     return sendMessageToTab(type, payload);
-  });
-}
-
-function sendLongTaskToContent(type, payload = {}) {
-  return sendLongTaskMessage(type, payload).catch(async (error) => {
-    if (!/Receiving end does not exist|Could not establish connection|No long task response/i.test(error.message)) {
-      throw error;
-    }
-
-    await chrome.scripting.executeScript({
-      target: { tabId: state.tab.id },
-      files: ["content/content.js"]
-    });
-
-    return sendLongTaskMessage(type, payload);
-  });
-}
-
-function sendLongTaskMessage(type, payload = {}) {
-  return new Promise((resolve, reject) => {
-    const port = chrome.tabs.connect(state.tab.id, { name: "BCE_LONG_TASK" });
-    let settled = false;
-    const timeoutId = window.setTimeout(() => {
-      settle(false, new Error("No long task response was received."));
-      try {
-        port.disconnect();
-      } catch (_error) {
-        // Ignore disconnect races.
-      }
-    }, 240000);
-
-    function settle(ok, value) {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeoutId);
-      if (ok) resolve(value);
-      else reject(value);
-    }
-
-    port.onMessage.addListener((response) => {
-      if (response?.ok) {
-        settle(true, response.data);
-      } else {
-        settle(false, new Error(response?.error || "Long task failed."));
-      }
-    });
-
-    port.onDisconnect.addListener(() => {
-      const runtimeError = chrome.runtime.lastError;
-      if (!settled && runtimeError) {
-        settle(false, new Error(runtimeError.message || "Long task connection closed."));
-      }
-    });
-
-    port.postMessage({ type, payload });
   });
 }
 
@@ -1147,20 +950,20 @@ function sanitizeSrtText(text) {
     .trim();
 }
 
-async function copyMarkdown() {
+async function copyPlainText() {
   const result = getActiveResult();
   if (!result) return;
 
-  await navigator.clipboard.writeText(buildMarkdown(result));
-  showButtonFeedback(nodes.copyMarkdownButton, "已复制", "复制 MD");
-  setMessage("Markdown 已复制。");
+  await navigator.clipboard.writeText(result.text);
+  showButtonFeedback(nodes.copyTextButton, "已复制", "复制全文");
+  setMessage("全文已复制。");
 }
 
 function downloadText(type) {
   const result = getActiveResult();
   if (!result) return;
 
-  const format = EXPORT_FORMATS[type] || EXPORT_FORMATS.md;
+  const format = EXPORT_FORMATS[type] || EXPORT_FORMATS.txt;
   const text = format.build(result);
   const filename = `${safeFilename(result.title || result.videoId)}.${format.extension}`;
   const url = URL.createObjectURL(new Blob([text], { type: `${format.mime};charset=utf-8` }));
@@ -1168,11 +971,6 @@ function downloadText(type) {
   chrome.downloads.download({ url, filename, saveAs: true }, () => {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
-}
-
-function setBusy(button, busy, label) {
-  button.disabled = busy;
-  setButtonLabel(button, label);
 }
 
 function setButtonLabel(button, label) {

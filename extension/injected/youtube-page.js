@@ -766,6 +766,89 @@
     return parsed.toString();
   }
 
+  function collectYouTubeAudioFormats(playerResponse) {
+    const streamingData = playerResponse?.streamingData || {};
+    const formats = [
+      ...(streamingData.adaptiveFormats || []),
+      ...(streamingData.formats || [])
+    ];
+    return formats
+      .map((format) => ({
+        url: format.url || "",
+        signatureCipher: format.signatureCipher || format.cipher || "",
+        mimeType: String(format.mimeType || "").split(";")[0].trim(),
+        bitrate: Number(format.bitrate) || 0,
+        contentLength: format.contentLength ? Number(format.contentLength) : undefined,
+        audioOnly: !format.width && !format.height && /audio\//i.test(format.mimeType || "")
+      }))
+      .filter((format) => format.mimeType.startsWith("audio/"));
+  }
+
+  function pickLowestBitrateYouTubeAudio(formats) {
+    const audioOnly = formats.filter((format) => format.audioOnly && format.url);
+    const pool = audioOnly.length ? audioOnly : formats.filter((format) => format.url);
+    if (!pool.length) return null;
+    pool.sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
+    const lowest = pool[0];
+    return {
+      url: lowest.url,
+      mimeType: lowest.mimeType,
+      contentLength: lowest.contentLength,
+      bitrate: lowest.bitrate
+    };
+  }
+
+  async function fetchInnerTubePlayerAudio(videoId) {
+    // Android client usually exposes direct audio-only URLs without extra cipher handling.
+    const contextClient = getInnertubeClient();
+    const response = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+      method: "POST",
+      credentials: "include",
+      referrer: location.href,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        videoId,
+        context: {
+          client: {
+            clientName: "ANDROID",
+            clientVersion: "19.09.37",
+            hl: contextClient.hl || "en",
+            gl: contextClient.gl || "US"
+          }
+        }
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`InnerTube player request failed: HTTP ${response.status}`);
+    }
+    const player = await response.json();
+    const formats = collectYouTubeAudioFormats(player);
+    const picked = pickLowestBitrateYouTubeAudio(formats);
+    if (!picked) throw new Error("InnerTube response did not include a usable audio stream.");
+    return picked;
+  }
+
+  async function getAudioSource() {
+    const videoId = parseYouTubeVideoId();
+    if (!videoId) throw new Error("Could not parse YouTube video id from the current page.");
+    let picked = null;
+    try {
+      picked = pickLowestBitrateYouTubeAudio(collectYouTubeAudioFormats(getPlayerResponse()));
+    } catch (_error) {
+      picked = null;
+    }
+    // Reuse an already-available direct audio URL; otherwise ask InnerTube Android client.
+    if (!picked) picked = await fetchInnerTubePlayerAudio(videoId);
+    return {
+      platform: "youtube",
+      videoId,
+      url: picked.url,
+      mimeType: picked.mimeType,
+      contentLength: picked.contentLength,
+      bitrate: picked.bitrate
+    };
+  }
+
   function postResult(requestId, ok, data, error) {
     window.postMessage(
       {
@@ -792,6 +875,11 @@
 
       if (message.action === "extractSubtitle") {
         postResult(message.requestId, true, await extractSubtitle(message.payload));
+        return;
+      }
+
+      if (message.action === "getAudioSource") {
+        postResult(message.requestId, true, await getAudioSource());
         return;
       }
 

@@ -150,12 +150,19 @@ h2 {
   margin-top: 4px;
 }
 
-.controls,
 .result,
-.ai {
+.groq,
+.no-subtitle,
+.status-card {
   display: grid;
   gap: 8px;
   padding: 9px;
+}
+
+.status-card[hidden],
+.result[hidden],
+.no-subtitle[hidden] {
+  display: none;
 }
 
 .field {
@@ -246,42 +253,6 @@ button.copied {
   color: #12633d;
 }
 
-.mode-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f5f7fb;
-}
-
-.mode-tabs[hidden],
-.extract-panel[hidden] {
-  display: none;
-}
-
-.mode-tab {
-  min-height: 28px;
-  border-color: transparent;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.mode-tab.active {
-  border-color: var(--line-strong);
-  background: var(--card-strong);
-  color: var(--blue-ink);
-  box-shadow: 0 3px 10px rgba(18, 31, 56, 0.06);
-}
-
-.extract-panel {
-  display: grid;
-  gap: 7px;
-}
-
 .primary {
   border-color: transparent;
   background: var(--blue);
@@ -291,17 +262,6 @@ button.copied {
 
 .primary:hover:not(:disabled) {
   background: #0f6ee8;
-}
-
-.primary.soft {
-  border-color: rgba(22, 119, 255, 0.18);
-  background: var(--blue-soft);
-  color: var(--blue-ink);
-}
-
-.primary.soft:hover:not(:disabled) {
-  border-color: rgba(22, 119, 255, 0.36);
-  background: #e4f1ff;
 }
 
 .secondary {
@@ -319,9 +279,6 @@ button.copied {
   color: var(--blue);
 }
 
-.result[hidden],
-.ai-settings[hidden],
-.summary[hidden],
 .collection-panel[hidden] {
   display: none;
 }
@@ -342,8 +299,7 @@ button.copied {
   white-space: nowrap;
 }
 
-.preview,
-.summary {
+.preview {
   overflow: auto;
   max-height: 156px;
   min-height: 104px;
@@ -355,12 +311,6 @@ button.copied {
   color: #1e2733;
   font: 11px/1.48 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
-}
-
-.summary {
-  max-height: 178px;
-  min-height: 96px;
-  background: linear-gradient(180deg, #fbfdff, #ffffff);
 }
 
 .collection-panel {
@@ -419,10 +369,23 @@ button.copied {
 }
 
 .export-actions {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.ai-settings {
+.advanced {
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  display: grid;
+  gap: 6px;
+}
+
+.advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.groq-settings {
   display: grid;
   gap: 7px;
   padding: 8px;
@@ -431,8 +394,8 @@ button.copied {
   background: #fbfcff;
 }
 
-.prompt-field textarea {
-  font: 11px/1.48 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+.groq-settings[hidden] {
+  display: none;
 }
 
 .split {
