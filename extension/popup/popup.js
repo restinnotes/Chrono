@@ -398,11 +398,21 @@ async function transcribeWithGroq(progressNode) {
   setMessage("正在获取音频地址…");
 
   try {
-    const audioSource = await sendToContent(getAudioSourceMessageType(platform));
+    let audioSource = await sendToContent(getAudioSourceMessageType(platform));
     if (!audioSource?.url) throw new Error("当前页面没有返回可用音频地址。");
     setGroqProgress(progressNode, "正在下载音频…");
     setMessage("正在下载音频…");
-    const audioBlob = await fetchAudioBlob(audioSource.url, platform);
+    let audioBlob;
+    try {
+      audioBlob = await fetchAudioBlob(audioSource, platform);
+    } catch (error) {
+      // Signed CDN URLs expire quickly (403) or hit an unhealthy edge. Refresh
+      // once from the player page, then retry the fresh URL.
+      if (![401, 403, 404, 410].includes(error?.httpStatus)) throw error;
+      setGroqProgress(progressNode, "音频地址已过期，正在刷新后重试…");
+      audioSource = await sendToContent(getAudioSourceMessageType(platform), { forceRefresh: true });
+      audioBlob = await fetchAudioBlob(audioSource, platform);
+    }
     setGroqProgress(progressNode, "正在切片并调用 Groq Whisper…");
     setMessage("正在切片并调用 Groq Whisper…");
     const sliceResults = await transcribeAudioSlices(audioBlob, { progressNode, platform });
@@ -449,17 +459,52 @@ function getAudioSourceMessageType(platform) {
   return type;
 }
 
-async function fetchAudioBlob(audioUrl, platform) {
-  const response = await fetch(audioUrl, {
-    credentials: platform === "bilibili" ? "include" : "omit",
-    referrer: state.tab?.url || location.href
-  });
-  if (!response.ok) {
-    throw new Error(`音频下载失败：HTTP ${response.status}`);
+async function fetchAudioBlob(audioSource, platform) {
+  const urls = [...new Set([audioSource?.url, ...(audioSource?.backupUrls || [])].filter(Boolean))];
+  if (!urls.length) throw new Error("当前页面没有返回可用音频地址。");
+
+  let lastError;
+  let lastHttpError;
+  for (const audioUrl of urls) {
+    try {
+      const response = await fetch(audioUrl, {
+        credentials: platform === "bilibili" ? "include" : "omit",
+        referrer: buildAudioReferer(platform),
+        referrerPolicy: "no-referrer-when-downgrade"
+      });
+      if (!response.ok) {
+        const error = new Error(`音频下载失败：HTTP ${response.status}`);
+        error.httpStatus = response.status;
+        lastHttpError = error;
+        lastError = error;
+        continue;
+      }
+      const blob = await response.blob();
+      if (!blob.size) {
+        lastError = new Error("音频下载为空。");
+        continue;
+      }
+      return blob;
+    } catch (error) {
+      if (!lastHttpError) lastError = error;
+    }
   }
-  const blob = await response.blob();
-  if (!blob.size) throw new Error("音频下载为空。");
-  return blob;
+
+  if (lastHttpError) {
+    lastHttpError.message += `（已尝试 ${urls.length} 个音频地址）`;
+    throw lastHttpError;
+  }
+  throw lastError || new Error("音频下载失败。");
+}
+
+function buildAudioReferer(platform) {
+  const url = new URL(state.tab?.url || location.href);
+  const allowedParams = platform === "bilibili" ? ["p"] : ["v"];
+  for (const key of [...url.searchParams.keys()]) {
+    if (!allowedParams.includes(key)) url.searchParams.delete(key);
+  }
+  url.hash = "";
+  return url.toString();
 }
 
 function getGroqApiKeys() {

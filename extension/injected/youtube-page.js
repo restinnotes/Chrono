@@ -772,16 +772,39 @@
       ...(streamingData.adaptiveFormats || []),
       ...(streamingData.formats || [])
     ];
-    return formats
+    const decoded = formats.map((format) => ({
+      rawUrl: format.url || "",
+      signatureCipher: format.signatureCipher || format.cipher || "",
+      mimeType: String(format.mimeType || "").split(";")[0].trim(),
+      bitrate: Number(format.bitrate) || 0,
+      contentLength: format.contentLength ? Number(format.contentLength) : undefined,
+      audioOnly: !format.width && !format.height && /audio\//i.test(format.mimeType || "")
+    }));
+    return decoded
       .map((format) => ({
-        url: format.url || "",
-        signatureCipher: format.signatureCipher || format.cipher || "",
-        mimeType: String(format.mimeType || "").split(";")[0].trim(),
-        bitrate: Number(format.bitrate) || 0,
-        contentLength: format.contentLength ? Number(format.contentLength) : undefined,
-        audioOnly: !format.width && !format.height && /audio\//i.test(format.mimeType || "")
+        url: format.rawUrl || decipherYouTubeUrl(format.signatureCipher),
+        mimeType: format.mimeType,
+        bitrate: format.bitrate,
+        contentLength: format.contentLength,
+        audioOnly: format.audioOnly
       }))
-      .filter((format) => format.mimeType.startsWith("audio/"));
+      .filter((format) => format.url && format.mimeType.startsWith("audio/"));
+  }
+
+  function decipherYouTubeUrl(signatureCipher) {
+    // Formats with signatureCipher need YouTube's player JS deciphering, which
+    // we deliberately do not reimplement. Keep the URL only if it is already
+    // usable; otherwise drop the format so InnerTube clients are tried next.
+    if (!signatureCipher) return "";
+    try {
+      const params = new URLSearchParams(signatureCipher);
+      const url = params.get("url") || "";
+      const sig = params.get("s") || params.get("sig") || "";
+      if (url && !sig) return url;
+    } catch (_error) {
+      // Fall through to empty.
+    }
+    return "";
   }
 
   function pickLowestBitrateYouTubeAudio(formats) {
@@ -799,45 +822,115 @@
   }
 
   async function fetchInnerTubePlayerAudio(videoId) {
-    // Android client usually exposes direct audio-only URLs without extra cipher handling.
+    // Try page-embedded client config first, then known-good desktop/mobile
+    // clients. Older hardcoded ANDROID versions get HTTP 400 now, so prefer
+    // the page's own client and fall back through WEB / ANDROID_TESTSUITE.
     const contextClient = getInnertubeClient();
-    const response = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+    const apiKey = getInnertubeApiKey();
+    const candidates = buildInnerTubeClientCandidates(contextClient);
+    const errors = [];
+    for (const client of candidates) {
+      try {
+        const player = await requestInnerTubePlayer(videoId, client, apiKey);
+        const picked = pickLowestBitrateYouTubeAudio(collectYouTubeAudioFormats(player));
+        if (picked) return { ...picked, clientName: client.clientName };
+      } catch (error) {
+        errors.push(`${client.clientName}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    throw new Error(`InnerTube player request failed (${errors.join("; ") || "no usable audio stream"}).`);
+  }
+
+  function getInnertubeApiKey() {
+    return window.ytcfg?.get?.("INNERTUBE_API_KEY")
+      || window.ytcfg?.data_?.INNERTUBE_API_KEY
+      || findInnertubeApiKeyInScripts()
+      || "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
+  }
+
+  function findInnertubeApiKeyInScripts() {
+    for (const script of document.scripts) {
+      const text = script.textContent || "";
+      const match = text.match(/"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"/);
+      if (match?.[1]) return match[1];
+    }
+    return "";
+  }
+
+  function buildInnerTubeClientCandidates(contextClient) {
+    const candidates = [];
+    if (contextClient?.clientName) {
+      candidates.push({
+        clientName: contextClient.clientName,
+        clientVersion: contextClient.clientVersion,
+        hl: contextClient.hl,
+        gl: contextClient.gl
+      });
+    }
+    candidates.push(
+      { clientName: "WEB", clientVersion: contextClient.clientVersion || getWebClientVersion() || "2.20250920.00.00", hl: contextClient.hl || "en", gl: contextClient.gl || "US" },
+      { clientName: "ANDROID", clientVersion: "20.10.38", hl: contextClient.hl || "en", gl: contextClient.gl || "US", androidSdkVersion: 30 },
+      { clientName: "ANDROID_TESTSUITE", clientVersion: "1.9.0", hl: contextClient.hl || "en", gl: contextClient.gl || "US" },
+      { clientName: "WEB_EMBEDDED_PLAYER", clientVersion: "1.20250917.00.00", hl: contextClient.hl || "en", gl: contextClient.gl || "US" }
+    );
+    const seen = new Set();
+    return candidates.filter((client) => {
+      const key = `${client.clientName}@${client.clientVersion}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function getWebClientVersion() {
+    const context = window.ytcfg?.get?.("INNERTUBE_CONTEXT") || window.ytcfg?.data_?.INNERTUBE_CONTEXT || {};
+    return context.client?.clientVersion || "";
+  }
+
+  async function requestInnerTubePlayer(videoId, client, apiKey) {
+    const endpoint = `https://www.youtube.com/youtubei/v1/player?prettyPrint=false${apiKey ? `&key=${encodeURIComponent(apiKey)}` : ""}`;
+    const body = {
+      videoId,
+      context: {
+        client: {
+          clientName: client.clientName,
+          clientVersion: client.clientVersion,
+          hl: client.hl || "en",
+          gl: client.gl || "US"
+        }
+      }
+    };
+    if (client.androidSdkVersion) body.context.client.androidSdkVersion = client.androidSdkVersion;
+    const response = await fetch(endpoint, {
       method: "POST",
       credentials: "include",
       referrer: location.href,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        videoId,
-        context: {
-          client: {
-            clientName: "ANDROID",
-            clientVersion: "19.09.37",
-            hl: contextClient.hl || "en",
-            gl: contextClient.gl || "US"
-          }
-        }
-      })
+      body: JSON.stringify(body)
     });
     if (!response.ok) {
-      throw new Error(`InnerTube player request failed: HTTP ${response.status}`);
+      throw new Error(`HTTP ${response.status}`);
     }
     const player = await response.json();
-    const formats = collectYouTubeAudioFormats(player);
-    const picked = pickLowestBitrateYouTubeAudio(formats);
-    if (!picked) throw new Error("InnerTube response did not include a usable audio stream.");
-    return picked;
+    if (player?.playabilityStatus?.status === "LOGIN_REQUIRED") {
+      throw new Error(player?.playabilityStatus?.reason || "login required");
+    }
+    return player;
   }
 
-  async function getAudioSource() {
+  async function getAudioSource(options = {}) {
     const videoId = parseYouTubeVideoId();
     if (!videoId) throw new Error("Could not parse YouTube video id from the current page.");
     let picked = null;
-    try {
-      picked = pickLowestBitrateYouTubeAudio(collectYouTubeAudioFormats(getPlayerResponse()));
-    } catch (_error) {
-      picked = null;
+    if (!options.forceRefresh) {
+      try {
+        picked = pickLowestBitrateYouTubeAudio(collectYouTubeAudioFormats(getPlayerResponse()));
+      } catch (_error) {
+        picked = null;
+      }
     }
-    // Reuse an already-available direct audio URL; otherwise ask InnerTube Android client.
+    // Reuse the fresh page URL normally; a retry must bypass the cache and
+    // get a newly-signed URL from InnerTube.
     if (!picked) picked = await fetchInnerTubePlayerAudio(videoId);
     return {
       platform: "youtube",
@@ -879,7 +972,7 @@
       }
 
       if (message.action === "getAudioSource") {
-        postResult(message.requestId, true, await getAudioSource());
+        postResult(message.requestId, true, await getAudioSource(message.payload || {}));
         return;
       }
 

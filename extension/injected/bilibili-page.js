@@ -458,19 +458,24 @@
 
   function pickLowestBitrateBilibiliAudio(audioList) {
     const items = (audioList || [])
-      .map((item) => ({
-        url: item.baseUrl || item.base_url || "",
-        mimeType: item.mimeType || item.mime_type || "audio/mp4",
-        contentLength: item.contentLength ? Number(item.contentLength) : undefined,
-        bitrate: Number(item.bandwidth) || 0,
-        codecs: item.codecs || ""
-      }))
+      .map((item) => {
+        const backupUrls = item.backupUrl || item.backup_url || [];
+        return {
+          url: item.baseUrl || item.base_url || "",
+          backupUrls: Array.isArray(backupUrls) ? backupUrls.filter(Boolean) : [backupUrls].filter(Boolean),
+          mimeType: item.mimeType || item.mime_type || "audio/mp4",
+          contentLength: item.contentLength ? Number(item.contentLength) : undefined,
+          bitrate: Number(item.bandwidth) || 0,
+          codecs: item.codecs || ""
+        };
+      })
       .filter((item) => item.url);
     if (!items.length) return null;
     items.sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
     const lowest = items[0];
     return {
       url: lowest.url,
+      backupUrls: lowest.backupUrls,
       mimeType: lowest.mimeType,
       contentLength: lowest.contentLength,
       bitrate: lowest.bitrate
@@ -504,6 +509,7 @@
       platform: "bilibili",
       videoId: metadata.videoId,
       url: audio.url,
+      backupUrls: audio.backupUrls || [],
       mimeType: audio.mimeType,
       contentLength: audio.contentLength,
       bitrate: audio.bitrate
@@ -570,7 +576,7 @@
       }
 
       if (message.action === "getAudioSource") {
-        postResult(message.requestId, true, await getAudioSource());
+        postResult(message.requestId, true, await getAudioSource(message.payload || {}));
         return;
       }
 
