@@ -3,7 +3,7 @@
   "name": "Browser Caption Extension",
   "description": "Extract subtitles from the current Bilibili or YouTube video page.",
   "version": "0.4.0",
-  "permissions": ["activeTab", "scripting", "downloads", "storage", "unlimitedStorage"],
+  "permissions": ["activeTab", "scripting", "downloads", "storage", "unlimitedStorage", "declarativeNetRequestWithHostAccess"],
   "host_permissions": [
     "https://www.bilibili.com/*",
     "https://api.bilibili.com/*",
@@ -15,6 +15,15 @@
     "https://*.hdslb.com/*",
     "https://*.bilivideo.com/*"
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "audio_cdn_headers",
+        "enabled": true,
+        "path": "rules/audio_cdn_headers.json"
+      }
+    ]
+  },
   "action": {
     "default_title": "Extract captions",
     "default_popup": "popup/popup.html",

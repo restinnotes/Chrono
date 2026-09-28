@@ -32,6 +32,8 @@ const MESSAGE_ROUTES = {
   BCE_EXTRACT_YOUTUBE_SUBTITLE: { platform: "youtube", action: "extractSubtitle" },
   BCE_GET_BILIBILI_AUDIO_SOURCE: { platform: "bilibili", action: "getAudioSource" },
   BCE_GET_YOUTUBE_AUDIO_SOURCE: { platform: "youtube", action: "getAudioSource" },
+  BCE_RESOLVE_YOUTUBE_AUDIO_URL: { platform: "youtube", action: "resolveAudioUrl" },
+  BCE_CAPTURE_YOUTUBE_AUDIO: { platform: "youtube", action: "captureAudio" },
   BCE_GET_AUDIO_SOURCE: { platform: null, action: "getAudioSource" },
   BCE_GET_TRACKS: { platform: null, action: "getTracks" },
   BCE_EXTRACT_SUBTITLE: { platform: null, action: "extractSubtitle" }

@@ -404,14 +404,14 @@ async function transcribeWithGroq(progressNode) {
     setMessage("正在下载音频…");
     let audioBlob;
     try {
-      audioBlob = await fetchAudioBlob(audioSource, platform);
+      audioBlob = await fetchAudioBlobWithFallbacks(audioSource, platform, progressNode);
     } catch (error) {
       // Signed CDN URLs expire quickly (403) or hit an unhealthy edge. Refresh
       // once from the player page, then retry the fresh URL.
       if (![401, 403, 404, 410].includes(error?.httpStatus)) throw error;
       setGroqProgress(progressNode, "音频地址已过期，正在刷新后重试…");
       audioSource = await sendToContent(getAudioSourceMessageType(platform), { forceRefresh: true });
-      audioBlob = await fetchAudioBlob(audioSource, platform);
+      audioBlob = await fetchAudioBlobWithFallbacks(audioSource, platform, progressNode);
     }
     setGroqProgress(progressNode, "正在切片并调用 Groq Whisper…");
     setMessage("正在切片并调用 Groq Whisper…");
@@ -457,6 +457,49 @@ function getAudioSourceMessageType(platform) {
   const type = PLATFORM_CONFIG[platform]?.messageTypes?.getAudioSource;
   if (!type) throw new Error("当前页面平台不支持音频获取。");
   return type;
+}
+
+async function fetchAudioBlobWithFallbacks(audioSource, platform, progressNode) {
+  // Layer 1: direct CDN fetch (DNR rewrites Origin/Referer on googlevideo).
+  try {
+    return await fetchAudioBlob(audioSource, platform);
+  } catch (error) {
+    if (![401, 403, 404, 410].includes(error?.httpStatus)) throw error;
+    if (platform === "bilibili") throw error;
+    setGroqProgress(progressNode, "直链被拒，正在页面内解密签名后重试…");
+  }
+  // Layer 2 (YouTube): decipher signatureCipher in page context, then fetch.
+  if (platform === "youtube" && audioSource?.signatureCipher) {
+    try {
+      const resolved = await sendToContent("BCE_RESOLVE_YOUTUBE_AUDIO_URL", {
+        signatureCipher: audioSource.signatureCipher
+      });
+      if (resolved?.url) {
+        return await fetchAudioBlob({ url: resolved.url, backupUrls: audioSource.backupUrls || [] }, platform);
+      }
+    } catch (_error) {
+      // Fall through to capture layer.
+    }
+  }
+  // Layer 3 (YouTube): capture the already-decoding <audio>/<video> stream in
+  // page context via MediaRecorder, same fallback family downloader extensions
+  // use when signed CDN fetches keep failing.
+  if (platform === "youtube") {
+    setGroqProgress(progressNode, "正在页面内录制音频流…");
+    setMessage("正在页面内录制音频流…");
+    return capturePageAudioBlob(progressNode);
+  }
+  throw new Error("音频下载失败：HTTP 403（已尝试全部音频地址）。");
+}
+
+async function capturePageAudioBlob(progressNode) {
+  const durationMs = 90000;
+  setGroqProgress(progressNode, "正在页面内录制音频流（约 90 秒采样）…");
+  const result = await sendToContent("BCE_CAPTURE_YOUTUBE_AUDIO", { durationMs });
+  if (!result?.audioDataUrl) throw new Error("页面音频录制失败。");
+  const blob = await (await fetch(result.audioDataUrl)).blob();
+  if (!blob.size) throw new Error("页面音频录制为空。");
+  return blob;
 }
 
 async function fetchAudioBlob(audioSource, platform) {

@@ -783,6 +783,7 @@
     return decoded
       .map((format) => ({
         url: format.rawUrl || decipherYouTubeUrl(format.signatureCipher),
+        signatureCipher: format.signatureCipher,
         mimeType: format.mimeType,
         bitrate: format.bitrate,
         contentLength: format.contentLength,
@@ -807,6 +808,74 @@
     return "";
   }
 
+  async function decipherYouTubeSignatureCipher(signatureCipher) {
+    // Adapted approach from avi12/youtube-downloader (Apache-2.0): parse the
+    // transform operations out of the page's player.js and replay them on the
+    // encrypted signature, without copying that project's source.
+    const params = new URLSearchParams(signatureCipher);
+    const encryptedSig = params.get("s");
+    const sigParam = params.get("sp") || "sig";
+    const baseUrl = params.get("url");
+    if (!encryptedSig || !baseUrl) throw new Error("Invalid signatureCipher format.");
+
+    const playerJsUrl = findPlayerJsUrl();
+    if (!playerJsUrl) throw new Error("Could not find YouTube player.js URL.");
+    const playerSource = await (await fetch(playerJsUrl, { credentials: "omit", referrer: location.href })).text();
+    const operations = parseSignatureOperations(playerSource);
+    if (!operations) throw new Error("Could not parse signature operations from player.js.");
+
+    const decryptedSig = applySignatureOperations(decodeURIComponent(encryptedSig), operations);
+    const resultUrl = new URL(decodeURIComponent(baseUrl), location.href);
+    resultUrl.searchParams.set(sigParam, decryptedSig);
+    return resultUrl.toString();
+  }
+
+  function findPlayerJsUrl() {
+    for (const script of document.scripts) {
+      const src = script.src || "";
+      if (/\/s\/player\/.*base\.js/.test(src) || /player_ias.*\.js/.test(src)) return src;
+    }
+    const html = document.documentElement.innerHTML || "";
+    const match = html.match(/"(\/s\/player\/[^"]+\/base\.js)"/);
+    if (match?.[1]) return `https://www.youtube.com${match[1]}`;
+    return "";
+  }
+
+  function parseSignatureOperations(playerSource) {
+    // YouTube's decipher function is a series of swap/reverse/slice/splice
+    // calls on a token array. Detect the call sequence generically instead of
+    // hardcoding function names, which change with every player release.
+    const fnMatch = playerSource.match(/function\s*\(\w+\)\s*\{\s*\w+=\w+\.split\(\s*""\s*\)\s*;([^}]+?)\s*return\s+\w+\.join\(\s*""\s*\)/) || playerSource.match(/(\w+)=(\w+)\.split\(\s*""\s*\)\s*;([^;]+;)+?\s*return\s+\2\.join\(\s*""\s*\)/);
+    if (!fnMatch) return null;
+    const body = fnMatch[0];
+    const calls = [...body.matchAll(/(\w+)\.(\w+)\s*\(\s*\w+\s*(?:,\s*(\d+))?\s*\)/g)];
+    const operations = [];
+    for (const call of calls) {
+      const method = call[2];
+      const arg = call[3] !== undefined ? Number(call[3]) : null;
+      if (/reverse/i.test(method)) operations.push({ op: "reverse" });
+      else if (/splice/i.test(method)) operations.push({ op: "splice", arg: arg ?? 0 });
+      else if (/slice/i.test(method)) operations.push({ op: "slice", arg: arg ?? 0 });
+      else if (/swap|exchange/i.test(method) || (arg !== null && /^\w+$/.test(method))) operations.push({ op: "swap", arg: arg ?? 0 });
+    }
+    return operations.length ? operations : null;
+  }
+
+  function applySignatureOperations(signature, operations) {
+    let tokens = signature.split("");
+    for (const operation of operations) {
+      if (operation.op === "reverse") tokens = tokens.reverse();
+      else if (operation.op === "slice" || operation.op === "splice") tokens = tokens.slice(operation.arg);
+      else if (operation.op === "swap") {
+        const index = (operation.arg % tokens.length + tokens.length) % tokens.length;
+        const first = tokens[0];
+        tokens[0] = tokens[index];
+        tokens[index] = first;
+      }
+    }
+    return tokens.join("");
+  }
+
   function pickLowestBitrateYouTubeAudio(formats) {
     const audioOnly = formats.filter((format) => format.audioOnly && format.url);
     const pool = audioOnly.length ? audioOnly : formats.filter((format) => format.url);
@@ -815,13 +884,22 @@
     const lowest = pool[0];
     return {
       url: lowest.url,
+      signatureCipher: lowest.signatureCipher || "",
       mimeType: lowest.mimeType,
       contentLength: lowest.contentLength,
       bitrate: lowest.bitrate
     };
   }
 
-  async function fetchInnerTubePlayerAudio(videoId) {
+  function pickYouTubeAudioCandidates(playerResponse, limit = 3) {
+    const formats = collectYouTubeAudioFormats(playerResponse)
+      .filter((format) => format.audioOnly)
+      .sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
+    const pool = formats.length ? formats : collectYouTubeAudioFormats(playerResponse);
+    return pool.slice(0, Math.max(1, limit));
+  }
+
+  async function fetchInnerTubePlayerResponse(videoId) {
     // Try page-embedded client config first, then known-good desktop/mobile
     // clients. Older hardcoded ANDROID versions get HTTP 400 now, so prefer
     // the page's own client and fall back through WEB / ANDROID_TESTSUITE.
@@ -829,16 +907,25 @@
     const apiKey = getInnertubeApiKey();
     const candidates = buildInnerTubeClientCandidates(contextClient);
     const errors = [];
+    let lastPlayer = null;
     for (const client of candidates) {
       try {
         const player = await requestInnerTubePlayer(videoId, client, apiKey);
-        const picked = pickLowestBitrateYouTubeAudio(collectYouTubeAudioFormats(player));
-        if (picked) return { ...picked, clientName: client.clientName };
+        lastPlayer = player;
+        if (pickLowestBitrateYouTubeAudio(collectYouTubeAudioFormats(player))) return player;
       } catch (error) {
         errors.push(`${client.clientName}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    if (lastPlayer) return lastPlayer;
     throw new Error(`InnerTube player request failed (${errors.join("; ") || "no usable audio stream"}).`);
+  }
+
+  async function fetchInnerTubePlayerAudio(videoId) {
+    const player = await fetchInnerTubePlayerResponse(videoId);
+    const picked = pickLowestBitrateYouTubeAudio(collectYouTubeAudioFormats(player));
+    if (!picked) throw new Error("InnerTube response did not include a usable audio stream.");
+    return { ...picked, clientName: undefined };
   }
 
   function getInnertubeApiKey() {
@@ -921,25 +1008,97 @@
   async function getAudioSource(options = {}) {
     const videoId = parseYouTubeVideoId();
     if (!videoId) throw new Error("Could not parse YouTube video id from the current page.");
-    let picked = null;
+    // Return ranked candidates: popup tries each URL in order (direct URL,
+    // deciphered cipher URL, fresh InnerTube URLs). This mirrors the stable
+    // multi-format approach used by browser downloader extensions.
+    const candidates = [];
     if (!options.forceRefresh) {
       try {
-        picked = pickLowestBitrateYouTubeAudio(collectYouTubeAudioFormats(getPlayerResponse()));
+        candidates.push(...pickYouTubeAudioCandidates(getPlayerResponse()));
       } catch (_error) {
-        picked = null;
+        // Fall through to InnerTube.
       }
     }
-    // Reuse the fresh page URL normally; a retry must bypass the cache and
-    // get a newly-signed URL from InnerTube.
-    if (!picked) picked = await fetchInnerTubePlayerAudio(videoId);
+    if (!candidates.length) {
+      const player = await fetchInnerTubePlayerResponse(videoId);
+      candidates.push(...pickYouTubeAudioCandidates(player));
+    }
+    if (!candidates.length) throw new Error("Current YouTube page did not expose a usable audio stream.");
+    const [primary, ...rest] = candidates;
     return {
       platform: "youtube",
       videoId,
-      url: picked.url,
-      mimeType: picked.mimeType,
-      contentLength: picked.contentLength,
-      bitrate: picked.bitrate
+      url: primary.url,
+      signatureCipher: primary.signatureCipher || "",
+      backupUrls: rest.map((item) => item.url).filter(Boolean),
+      mimeType: primary.mimeType,
+      contentLength: primary.contentLength,
+      bitrate: primary.bitrate
     };
+  }
+
+  async function resolveYouTubeCipherUrl(signatureCipher) {
+    return decipherYouTubeSignatureCipher(signatureCipher);
+  }
+
+  async function capturePageAudio({ durationMs = 90000 } = {}) {
+    // Last-resort layer: record the page's already-decoding media element via
+    // MediaRecorder (opus/webm). Only a sample is needed for transcription
+    // fallback; the slice pipeline handles the resulting blob normally.
+    const media = document.querySelector("video") || document.querySelector("audio");
+    if (!media) throw new Error("当前页面没有可录制的音频元素。");
+    if (!window.MediaRecorder) throw new Error("当前浏览器不支持页面音频录制。");
+    const stream = media.captureStream
+      ? media.captureStream()
+      : media.mozCaptureStream
+        ? media.mozCaptureStream()
+        : null;
+    if (!stream || !stream.getAudioTracks().length) {
+      throw new Error("页面音频流不可捕获（可能受 DRM 保护）。");
+    }
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "";
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    const chunks = [];
+    const dataPromise = new Promise((resolve, reject) => {
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) chunks.push(event.data);
+      };
+      recorder.onerror = () => reject(new Error("页面音频录制失败。"));
+      recorder.onstop = () => resolve();
+    });
+    const wasPaused = media.paused;
+    try {
+      if (wasPaused) await media.play().catch(() => {});
+      recorder.start(1000);
+      await delay(Math.min(Math.max(Number(durationMs) || 90000, 15000), 180000));
+    } finally {
+      try {
+        recorder.stop();
+      } catch (_error) {
+        // Ignore stop races.
+      }
+    }
+    await dataPromise;
+    if (wasPaused) {
+      try {
+        media.pause();
+      } catch (_error) {
+        // Ignore pause races.
+      }
+    }
+    const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+    if (!blob.size) throw new Error("页面音频录制为空。");
+    const audioDataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("页面音频读取失败。"));
+      reader.readAsDataURL(blob);
+    });
+    return { audioDataUrl, mimeType: blob.type, byteLength: blob.size };
   }
 
   function postResult(requestId, ok, data, error) {
@@ -973,6 +1132,17 @@
 
       if (message.action === "getAudioSource") {
         postResult(message.requestId, true, await getAudioSource(message.payload || {}));
+        return;
+      }
+
+      if (message.action === "resolveAudioUrl") {
+        if (!message.payload?.signatureCipher) throw new Error("No signatureCipher was provided.");
+        postResult(message.requestId, true, { url: await resolveYouTubeCipherUrl(message.payload.signatureCipher) });
+        return;
+      }
+
+      if (message.action === "captureAudio") {
+        postResult(message.requestId, true, await capturePageAudio(message.payload || {}));
         return;
       }
 
