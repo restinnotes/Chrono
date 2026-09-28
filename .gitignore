@@ -1,6 +1,7 @@
 .DS_Store
 docs/
 extension/.DS_Store
+extension/_metadata/
 extension/icons/chrono-icon-source.png
 !releases/
 !releases/*.zip

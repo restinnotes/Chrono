@@ -122,6 +122,9 @@ const nodes = {
   groqModelInput: document.getElementById("groqModelInput"),
   groqLanguageInput: document.getElementById("groqLanguageInput"),
   saveGroqSettingsButton: document.getElementById("saveGroqSettingsButton"),
+  groqJobBanner: document.getElementById("groqJobBanner"),
+  groqJobText: document.getElementById("groqJobText"),
+  groqJobViewButton: document.getElementById("groqJobViewButton"),
   message: document.getElementById("message")
 };
 
@@ -130,7 +133,6 @@ init();
 async function init() {
   bindEvents();
   await loadGroqSettings();
-
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   state.tab = tab;
 
@@ -148,9 +150,35 @@ async function init() {
   setStatus("可提取", "ok");
   nodes.videoId.textContent = videoId || "-";
   nodes.videoTitle.textContent = tab.title ? cleanPlatformTitle(tab.title, platform) : `已检测到 ${getPlatformLabel(platform)} 视频`;
+  const resumed = await resumeGroqJob(platform, videoId);
+  if (resumed) return;
   const restored = await restoreCachedResult(platform, videoId);
   if (restored) return;
   await autoPrepareSubtitles();
+}
+
+async function resumeGroqJob(platform, videoId) {
+  const stored = await chrome.storage.local.get(["chronoGroqJobs"]).catch(() => ({}));
+  const index = Array.isArray(stored.chronoGroqJobs) ? stored.chronoGroqJobs : [];
+  for (let i = index.length - 1; i >= 0; i -= 1) {
+    const jobId = index[i];
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "CHRONO_GROQ_STATUS", payload: { jobId } });
+      const job = response?.data;
+      if (!response?.ok || !job) continue;
+      if (job.platform !== platform || job.videoId !== videoId) continue;
+      if (job.status === "done" || job.status === "failed") continue;
+      state.groqJobId = job.jobId;
+      hideAllPanels();
+      nodes.noSubtitlePanel.hidden = false;
+      beginGroqPolling(nodes.groqProgress, job.jobId);
+      setMessage("已恢复后台转录任务，进度继续更新。");
+      return true;
+    } catch (_error) {
+      // Try the next indexed job.
+    }
+  }
+  return false;
 }
 
 function bindEvents() {
@@ -165,6 +193,13 @@ function bindEvents() {
   nodes.fallbackGroqButton.addEventListener("click", () => transcribeWithGroq(nodes.groqFallbackProgress));
   nodes.toggleGroqSettingsButton.addEventListener("click", toggleGroqSettings);
   nodes.saveGroqSettingsButton.addEventListener("click", saveGroqSettings);
+  nodes.groqJobViewButton.addEventListener("click", focusGroqJob);
+}
+
+function focusGroqJob() {
+  nodes.noSubtitlePanel.hidden = false;
+  nodes.extractFailedPanel.hidden = true;
+  if (state.groqJobId) beginGroqPolling(nodes.groqProgress, state.groqJobId);
 }
 
 async function autoPrepareSubtitles(isRetry = false) {
@@ -249,6 +284,7 @@ function hideAllPanels() {
   nodes.resultPanel.hidden = true;
   nodes.noSubtitlePanel.hidden = true;
   nodes.extractFailedPanel.hidden = true;
+  nodes.groqJobBanner.hidden = true;
 }
 
 function setAutoStatus(text) {
@@ -392,59 +428,119 @@ async function transcribeWithGroq(progressNode) {
     return;
   }
 
-  setGroqProgress(progressNode, "正在获取音频地址…");
+  // Jobs run in the background service worker: the popup only starts the job
+  // and polls status, so closing the popup no longer kills transcription.
+  const videoId = parsePlatformVideoId(state.tab?.url, platform);
+  let job;
+  try {
+    job = await startBackgroundGroqJob({
+      platform,
+      videoId,
+      tabId: state.tab?.id,
+      tabUrl: state.tab?.url,
+      title: state.metadata?.title || cleanPlatformTitle(state.tab?.title || "", platform),
+      author: state.metadata?.author || ""
+    });
+  } catch (error) {
+    setMessage(error.message, true);
+    return;
+  }
+
+  state.groqJobId = job.jobId;
+  beginGroqPolling(progressNode, job.jobId);
+}
+
+async function startBackgroundGroqJob(context) {
+  const payload = {
+    platform: context.platform,
+    videoId: context.videoId,
+    tabId: context.tabId,
+    tabUrl: context.tabUrl,
+    title: context.title,
+    author: context.author,
+    model: state.groqSettings.model,
+    language: state.groqSettings.language,
+    apiKeys: getGroqApiKeys(),
+    getAudioMessageType: getAudioSourceMessageType(context.platform),
+    getAudioPayload: {}
+  };
+  const response = await chrome.runtime.sendMessage({ type: "CHRONO_GROQ_START", payload });
+  if (!response?.ok) throw new Error(response?.error || "转录任务启动失败。");
+  if (!response.data?.jobId) throw new Error("转录任务启动失败。");
+  setMessage("转录任务已开始，可关闭弹窗，稍后回来查看进度。");
+  return response.data;
+}
+
+function beginGroqPolling(progressNode, jobId) {
+  stopGroqPolling();
   nodes.transcribeButton.disabled = true;
   nodes.fallbackGroqButton.disabled = true;
-  setMessage("正在获取音频地址…");
-
-  try {
-    let audioSource = await sendToContent(getAudioSourceMessageType(platform));
-    if (!audioSource?.url) throw new Error("当前页面没有返回可用音频地址。");
-    setGroqProgress(progressNode, "正在下载音频…");
-    setMessage("正在下载音频…");
-    let audioBlob;
+  state.groqKeepAlivePort = chrome.runtime.connect({ name: "CHRONO_GROQ_KEEPALIVE" });
+  // Poll status; each poll also wakes the MV3 worker if it was suspended.
+  const poll = async () => {
+    let job;
     try {
-      audioBlob = await fetchAudioBlobWithFallbacks(audioSource, platform, progressNode);
+      const response = await chrome.runtime.sendMessage({ type: "CHRONO_GROQ_STATUS", payload: { jobId } });
+      if (!response?.ok) throw new Error(response?.error || "无法读取转录进度。");
+      job = response.data;
     } catch (error) {
-      // Signed CDN URLs expire quickly (403) or hit an unhealthy edge. Refresh
-      // once from the player page, then retry the fresh URL.
-      if (![401, 403, 404, 410].includes(error?.httpStatus)) throw error;
-      setGroqProgress(progressNode, "音频地址已过期，正在刷新后重试…");
-      audioSource = await sendToContent(getAudioSourceMessageType(platform), { forceRefresh: true });
-      audioBlob = await fetchAudioBlobWithFallbacks(audioSource, platform, progressNode);
+      setGroqProgress(progressNode, "后台任务连接中断，重试读取中…");
+      return;
     }
-    setGroqProgress(progressNode, "正在切片并调用 Groq Whisper…");
-    setMessage("正在切片并调用 Groq Whisper…");
-    const sliceResults = await transcribeAudioSlices(audioBlob, { progressNode, platform });
-    const result = normalizeGroqSlices(sliceResults, {
-      platform,
-      videoId: parsePlatformVideoId(state.tab?.url, platform) || state.metadata?.videoId || audioSource.videoId,
-      url: state.tab?.url || state.metadata?.url,
-      title: state.metadata?.title || cleanPlatformTitle(state.tab?.title || "", platform),
-      author: state.metadata?.author || "",
-      language: state.groqSettings.language
-    });
+    if (!job || job.jobId !== state.groqJobId) return;
+    applyGroqJobState(job, progressNode);
+  };
+  state.groqPollTimer = setInterval(poll, 1500);
+  poll();
+}
+
+function stopGroqPolling() {
+  if (state.groqPollTimer) clearInterval(state.groqPollTimer);
+  state.groqPollTimer = null;
+  try {
+    state.groqKeepAlivePort?.disconnect();
+  } catch (_error) {
+    // Ignore disconnect races.
+  }
+  state.groqKeepAlivePort = null;
+}
+
+async function applyGroqJobState(job, progressNode) {
+  const total = job.sliceTotal || 0;
+  const index = job.sliceIndex || 0;
+  if (job.status === "done" && job.result) {
+    stopGroqPolling();
+    nodes.groqJobBanner.hidden = true;
     state.metadata = state.metadata || {
-      platform,
-      videoId: result.videoId,
-      url: result.url,
-      title: result.title,
-      author: result.author
+      platform: job.platform,
+      videoId: job.result.videoId,
+      url: job.result.url,
+      title: job.result.title,
+      author: job.result.author
     };
     state.tracks = [];
-    state.result = result;
-    state.activeResult = result;
-    renderResult(result);
+    state.result = job.result;
+    state.activeResult = job.result;
+    renderResult(job.result);
     await saveResultCache();
     setGroqProgress(progressNode, "");
-    setMessage(`Groq 转录完成，已提取 ${result.segments.length} 段。`);
-  } catch (error) {
+    setMessage(`Groq 转录完成，已提取 ${job.result.segments.length} 段。`);
+    return;
+  }
+  if (job.status === "failed") {
+    stopGroqPolling();
+    nodes.groqJobBanner.hidden = true;
     setGroqProgress(progressNode, "");
-    setMessage(error.message, true);
-  } finally {
+    setMessage(job.error || "Groq 转录失败。", true);
     nodes.transcribeButton.disabled = false;
     nodes.fallbackGroqButton.disabled = false;
+    return;
   }
+  const counter = total > 1 ? `（${Math.min(index + 1, total)}/${total}）` : "";
+  setGroqProgress(progressNode, `${job.progress || "转录中…"}${counter}`);
+  setMessage(`${job.progress || "转录中…"}${counter}（可关闭弹窗，后台继续）`);
+  nodes.groqJobBanner.hidden = false;
+  nodes.groqJobText.textContent = `${job.title || "视频"} · ${job.progress || "转录中…"}${counter}`;
 }
 
 function setGroqProgress(progressNode, text) {

@@ -399,6 +399,25 @@ button.copied {
   display: none;
 }
 
+.groq-job {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px;
+  border-color: rgba(22, 119, 255, 0.32);
+  background: var(--blue-soft);
+}
+
+.groq-job[hidden] {
+  display: none;
+}
+
+.groq-job strong {
+  font-size: 12px;
+  color: var(--blue-ink);
+}
+
 .split {
   display: grid;
   gap: 7px;
